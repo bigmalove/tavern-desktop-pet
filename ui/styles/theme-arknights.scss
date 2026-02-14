@@ -1,0 +1,134 @@
+@import url('https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Teko:wght@500;600;700&display=swap');
+
+$ark-base: #181818;
+$ark-surface: #262626;
+$ark-surface-raised: #2f2f2f;
+$ark-line: #3b3b3b;
+$ark-text-main: #ffffff;
+$ark-text-sub: #8d8d8d;
+$ark-accent-yellow: #ffe100;
+$ark-accent-cyan: #00dac2;
+$ark-danger: #ff3b30;
+
+$font-cn: 'Source Han Sans SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif;
+$font-en: 'Oswald', 'Teko', 'Segoe UI', sans-serif;
+$font-mono: 'JetBrains Mono', 'Consolas', 'Courier New', monospace;
+
+@mixin overlay-backdrop($z-index: 10000, $alpha: 0.78) {
+  position: fixed;
+  inset: 0;
+  z-index: $z-index;
+  background: rgba(0, 0, 0, $alpha);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+@mixin tech-grid($size: 20px, $alpha: 0.035) {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, $alpha) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, $alpha) 1px, transparent 1px);
+  background-size: $size $size;
+}
+
+@mixin tech-panel($accent: $ark-accent-yellow) {
+  position: relative;
+  border: 1px solid $ark-line;
+  box-shadow: 10px 10px 0 rgba(0, 0, 0, 0.62);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%);
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 56px;
+    height: 2px;
+    background: $accent;
+    z-index: 2;
+  }
+}
+
+@mixin section-title {
+  margin: 0 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  background: #0f0f0f;
+  border-left: 4px solid $ark-accent-yellow;
+  transform: skewX(-14deg);
+
+  > * {
+    transform: skewX(14deg);
+  }
+}
+
+@mixin ark-button-base {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: transparent;
+  color: $ark-text-main;
+  font-family: $font-en;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%);
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+
+  &:hover:not(:disabled) {
+    background: $ark-accent-yellow;
+    color: #000;
+    border-color: $ark-accent-yellow;
+  }
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+}
+
+@mixin ark-input-base {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid $ark-line;
+  border-bottom: 2px solid #585858;
+  border-radius: 0;
+  background: rgba(0, 0, 0, 0.56);
+  color: $ark-accent-yellow;
+  font-family: $font-mono;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.18s ease, background 0.18s ease;
+
+  &:focus {
+    border-color: $ark-accent-yellow;
+    background: rgba(255, 225, 0, 0.08);
+  }
+
+  &::placeholder {
+    color: $ark-text-sub;
+  }
+}
+
+@mixin ark-scrollbar {
+  &::-webkit-scrollbar {
+    width: 7px;
+    height: 7px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: #555;
+  }
+
+  &::-webkit-scrollbar-thumb:hover {
+    background: #6f6f6f;
+  }
+}
+
