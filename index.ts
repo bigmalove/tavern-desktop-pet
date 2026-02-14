@@ -8,7 +8,7 @@ import { SCRIPT_NAME } from './core/constants';
 import { useUiStore } from './core/ui';
 
 const BUILD_TAG = '20260214.10';
-const SETTINGS_LABEL = `桌面宠物设置·${BUILD_TAG}`;
+const SETTINGS_LABEL = '桌面宠物设置';
 const OPEN_SETTINGS_FN_KEY = '__desktopPetOpenSettings_v2';
 
 // Pinia 必须在全局作用域创建，不能在 $(() => {}) 中
