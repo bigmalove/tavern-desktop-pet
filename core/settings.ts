@@ -92,6 +92,7 @@ const SettingsSchema = z
     triggerInterval: z.number().min(1).max(100).default(DEFAULTS.TRIGGER_INTERVAL),
     triggerProbability: z.number().min(0).max(100).default(DEFAULTS.TRIGGER_PROBABILITY),
     maxChatContext: z.number().min(1).max(50).default(DEFAULTS.MAX_CHAT_CONTEXT),
+    useTamakoTodaySpecial: z.boolean().default(DEFAULTS.USE_TAMAKO_TODAY_SPECIAL),
 
     // 表情 COT 配置
     emotionCotEnabled: z.boolean().default(true),

@@ -35,6 +35,7 @@ export const Live2DStage = {
   _boundWindowResize: null as (() => void) | null,
   _interactionSyncTimer: null as number | null,
   _pixelReadBuffer: null as Uint8Array | null,
+  _lastClampLogAt: 0,
 
   _clampPosition(
     x: number,
@@ -81,33 +82,87 @@ export const Live2DStage = {
     };
   },
 
+  _isRectFullyOutsideViewport(rect: DOMRect): boolean {
+    const top = this._top();
+    const viewportWidth = top.innerWidth || top.document.documentElement.clientWidth || 0;
+    const viewportHeight = top.innerHeight || top.document.documentElement.clientHeight || 0;
+    if (viewportWidth <= 0 || viewportHeight <= 0) return false;
+    return rect.right <= 0 || rect.bottom <= 0 || rect.left >= viewportWidth || rect.top >= viewportHeight;
+  },
+
+  _getVisibleAreaRatio(rect: DOMRect, viewportWidth: number, viewportHeight: number): number {
+    const rectWidth = Number.isFinite(rect.width) ? rect.width : 0;
+    const rectHeight = Number.isFinite(rect.height) ? rect.height : 0;
+    if (rectWidth <= 0 || rectHeight <= 0) return 1;
+    if (viewportWidth <= 0 || viewportHeight <= 0) return 1;
+
+    const visibleLeft = Math.max(0, rect.left);
+    const visibleTop = Math.max(0, rect.top);
+    const visibleRight = Math.min(viewportWidth, rect.right);
+    const visibleBottom = Math.min(viewportHeight, rect.bottom);
+    const visibleWidth = Math.max(0, visibleRight - visibleLeft);
+    const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+    const visibleArea = visibleWidth * visibleHeight;
+    const totalArea = rectWidth * rectHeight;
+    if (totalArea <= 0) return 1;
+
+    return Math.max(0, Math.min(1, visibleArea / totalArea));
+  },
+
+  _clampPositionByAxis(value: number, size: number, viewportSize: number, minVisible: number): number {
+    const safeSize = Number.isFinite(size) && size > 0 ? size : viewportSize;
+    const safeViewport = Number.isFinite(viewportSize) && viewportSize > 0 ? viewportSize : safeSize;
+    const safeMinVisible = Math.max(0, Math.min(minVisible, safeSize, safeViewport));
+    const min = Math.min(0, -safeSize + safeMinVisible);
+    const max = Math.max(0, safeViewport - safeMinVisible);
+    const safeValue = Number.isFinite(value) ? value : 0;
+    return Math.min(Math.max(safeValue, min), max);
+  },
+
   _clampContainerToViewport(options: { width: number; height: number }, reason: string): void {
     if (!this.container) return;
-    if (!this._shouldClampCurrentPosition()) return;
-
     const rect = this.container.getBoundingClientRect();
     const size = this._getContainerRectSize(options);
-    const clamped = this._clampPosition(
-      rect.left,
-      rect.top,
-      size.width,
-      size.height,
-      this._minVisiblePx,
-    );
+    const top = this._top();
+    const viewportWidth = top.innerWidth || top.document.documentElement.clientWidth || size.width;
+    const viewportHeight = top.innerHeight || top.document.documentElement.clientHeight || size.height;
+    const shouldClamp = this._shouldClampCurrentPosition();
+    const fullyOutside = this._isRectFullyOutsideViewport(rect);
+    const visibleRatio = this._getVisibleAreaRatio(rect, viewportWidth, viewportHeight);
+    const isResizeClamp = reason.includes('resize');
+    const forceFullVisible = (fullyOutside || isResizeClamp) && visibleRatio < 0.72;
+    if (!shouldClamp && !fullyOutside && !forceFullVisible) return;
 
-    if (!clamped.clamped) return;
+    const minVisibleX = forceFullVisible
+      ? Math.min(size.width, viewportWidth)
+      : Math.max(0, Math.min(this._minVisiblePx, size.width, viewportWidth));
+    const minVisibleY = forceFullVisible
+      ? Math.min(size.height, viewportHeight)
+      : Math.max(0, Math.min(this._minVisiblePx, size.height, viewportHeight));
 
-    this.container.style.left = `${clamped.x}px`;
-    this.container.style.top = `${clamped.y}px`;
+    const nextX = this._clampPositionByAxis(rect.left, size.width, viewportWidth, minVisibleX);
+    const nextY = this._clampPositionByAxis(rect.top, size.height, viewportHeight, minVisibleY);
+    const hasPositionChange = Math.abs(nextX - rect.left) > 0.5 || Math.abs(nextY - rect.top) > 0.5;
+    if (!hasPositionChange) return;
+
+    this.container.style.left = `${nextX}px`;
+    this.container.style.top = `${nextY}px`;
     this.container.style.right = 'auto';
     this.container.style.bottom = 'auto';
 
-    log(`绐楀彛鍙樺寲瀵艰嚧浣嶇疆瓒婄晫锛屽凡鑷姩淇(${reason})`, {
-      from: { x: rect.left, y: rect.top },
-      to: { x: clamped.x, y: clamped.y },
-    });
+    const now = Date.now();
+    if (now - this._lastClampLogAt > 600) {
+      this._lastClampLogAt = now;
+      log(`窗口变化触发位置修正(${reason})`, {
+        from: { x: rect.left, y: rect.top },
+        to: { x: nextX, y: nextY },
+        fullyOutside,
+        visibleRatio,
+        forceFullVisible,
+      });
+    }
 
-    this._onPositionChange?.(clamped.x, clamped.y);
+    this._onPositionChange?.(nextX, nextY);
   },
 
   _bindWindowResize(options: { width: number; height: number }): void {
@@ -121,7 +176,7 @@ export const Live2DStage = {
     try {
       top.addEventListener('resize', this._boundWindowResize, { passive: true });
     } catch (e) {
-      warn('缁戝畾绐楀彛 resize 鐩戝惉澶辫触', e);
+      warn('绑定 window.resize 监听失败', e);
       this._boundWindowResize = null;
     }
   },
@@ -550,7 +605,7 @@ export const Live2DStage = {
     const top = this._top();
     const PIXI = this._getPIXI();
     if (!PIXI) {
-      warn('PIXI 鏈氨缁紝鏃犳硶鍒涘缓鑸炲彴');
+      warn('PIXI 尚未就绪，无法创建舞台');
       return false;
     }
 
@@ -598,7 +653,7 @@ export const Live2DStage = {
       this.container.style.bottom = 'auto';
 
       if (clamped.clamped) {
-        log('妫€娴嬪埌瀹犵墿浣嶇疆瓒呭嚭鍙鍖哄煙锛屽凡鑷姩淇', {
+        log('检测到宠物位置超出可视区域，已自动修正', {
           from: options.position,
           to: { x: clamped.x, y: clamped.y },
         });
@@ -782,7 +837,7 @@ export const Live2DStage = {
     );
     this._startInteractionSyncTimer();
 
-    log('Live2D 鑸炲彴鍒涘缓瀹屾垚');
+    log('Live2D 舞台创建完成');
     return true;
   },
 
@@ -941,7 +996,7 @@ export const Live2DStage = {
       try {
         this.app.renderer.resize(width, height);
       } catch (e) {
-        warn('renderer.resize 澶辫触', e);
+        warn('renderer.resize 失败', e);
       }
     }
   },
@@ -955,7 +1010,7 @@ export const Live2DStage = {
       this.app.renderer.resize(width, height);
       this._syncInteractionLayerBounds();
     } catch (e) {
-      warn('renderer.resize 澶辫触', e);
+      warn('renderer.resize 失败', e);
     }
   },
 
@@ -992,7 +1047,7 @@ export const Live2DStage = {
       try {
         this.container.remove();
       } catch (e) {
-        warn('鑸炲彴瀹瑰櫒绉婚櫎澶辫触', e);
+        warn('舞台容器移除失败', e);
       }
       this.container = null;
     }

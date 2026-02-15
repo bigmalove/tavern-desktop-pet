@@ -36,7 +36,24 @@ export const Commentator = {
       const store = useSettingsStore();
       const s = store.settings;
 
-      const chatMessages = this._getChatContext(s.maxChatContext);
+      let chatMessages = this._getChatContext(s.maxChatContext);
+      if (s.useTamakoTodaySpecial) {
+        const todaySpecial = this._getTamakoTodaySpecialContent();
+        if (todaySpecial) {
+          chatMessages = [
+            ...chatMessages,
+            {
+              role: 'system',
+              name: '玉子市场今日特选',
+              message: todaySpecial,
+            },
+          ];
+          log(`已注入玉子市场“今日特选”上下文（${todaySpecial.length} 字）`);
+        } else {
+          log('已启用玉子市场兼容，但未读取到“今日特选”，回退到聊天记录');
+        }
+      }
+
       if (chatMessages.length === 0) {
         log('没有可用的聊天记录，跳过吐槽');
         return;
@@ -333,6 +350,134 @@ export const Commentator = {
       warn('获取聊天记录失败:', e);
       return [];
     }
+  },
+
+  _getTamakoTodaySpecialContent(): string {
+    try {
+      const topWindow = window.parent ?? window;
+      const topDocument = topWindow.document ?? document;
+      const currentSelector = '#tamako-market-window .tamako-content[data-content="current"]';
+
+      const emptyMessage = topDocument.querySelector(`${currentSelector} .tamako-empty .message`);
+      if (emptyMessage) {
+        return '';
+      }
+
+      const plotContent = topDocument.querySelector(`${currentSelector} .tamako-plot-content`) as HTMLElement | null;
+      const directText = this._sanitizeTamakoText(plotContent?.innerText || plotContent?.textContent || '');
+      if (directText) {
+        return directText;
+      }
+
+      const beautifierFrame = topDocument.querySelector(
+        `${currentSelector} iframe.tamako-beautifier-frame`,
+      ) as HTMLIFrameElement | null;
+      const payload = this._readTamakoPayloadFromIframe(beautifierFrame);
+      const payloadText = this._extractTamakoTextFromPayload(payload);
+      if (payloadText) {
+        return payloadText;
+      }
+
+      const currentContent = topDocument.querySelector(currentSelector) as HTMLElement | null;
+      return this._sanitizeTamakoText(currentContent?.innerText || currentContent?.textContent || '');
+    } catch (e) {
+      warn('读取玉子市场“今日特选”失败:', e);
+      return '';
+    }
+  },
+
+  _readTamakoPayloadFromIframe(iframe: HTMLIFrameElement | null): any | null {
+    if (!iframe) {
+      return null;
+    }
+    const name = String(iframe.name || '').trim();
+    if (!name.startsWith('TAMAKO_DATA:')) {
+      return null;
+    }
+    try {
+      return JSON.parse(name.slice('TAMAKO_DATA:'.length));
+    } catch (e) {
+      warn('解析玉子市场美化器 payload 失败:', e);
+      return null;
+    }
+  },
+
+  _extractTamakoTextFromPayload(payload: any): string {
+    if (!payload || typeof payload !== 'object') {
+      return '';
+    }
+
+    const captureTags = this._getTamakoCaptureTags();
+    const tags = payload.tags && typeof payload.tags === 'object' ? payload.tags : {};
+    const valuesFromTags: string[] = [];
+    for (const tag of captureTags) {
+      const value = this._sanitizeTamakoText(tags[tag]);
+      if (value) {
+        valuesFromTags.push(value);
+      }
+    }
+    if (valuesFromTags.length > 0) {
+      return valuesFromTags.join('\n\n');
+    }
+
+    const raw = String(payload.raw || '');
+    if (!raw) {
+      return '';
+    }
+    return this._extractTamakoTagText(raw, captureTags);
+  },
+
+  _getTamakoCaptureTags(): string[] {
+    try {
+      const context = SillyTavern?.getContext?.() as any;
+      const tags = context?.extensionSettings?.TamakoMarket?.captureTags;
+      if (Array.isArray(tags)) {
+        const normalized = tags
+          .map((tag) => String(tag || '').trim())
+          .filter((tag) => !!tag);
+        if (normalized.length > 0) {
+          return normalized;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return ['recall', 'scene_direction'];
+  },
+
+  _extractTamakoTagText(raw: string, tags: string[]): string {
+    const values: string[] = [];
+    for (const tag of tags) {
+      const safeTag = String(tag || '').trim();
+      if (!safeTag) {
+        continue;
+      }
+      const escapedTag = safeTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(`<${escapedTag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${escapedTag}>`, 'gi');
+      let match: RegExpExecArray | null;
+      while ((match = regex.exec(raw)) !== null) {
+        const value = this._sanitizeTamakoText(match[1] || '');
+        if (value) {
+          values.push(value);
+        }
+      }
+    }
+    return values.join('\n\n');
+  },
+
+  _sanitizeTamakoText(value: unknown): string {
+    const text = String(value ?? '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/\r\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    if (!text) {
+      return '';
+    }
+    if (/^(空空如也~|等待中\.\.\.|暂无内容|正在搜寻\.\.\.|扫描中\.\.\.|请稍等\.\.\.)$/.test(text)) {
+      return '';
+    }
+    return text;
   },
 
   destroy(): void {

@@ -329,6 +329,16 @@
                   max="50"
                 />
               </div>
+
+              <div class="form-group">
+                <label>
+                  <input type="checkbox" v-model="settings.useTamakoTodaySpecial" />
+                  兼容 Tamako Market：读取“今日特选”参与点评
+                </label>
+                <div class="hint">
+                  开启后会优先读取 Tamako Market（玉子市场）“今日特选”内容作为最新点评上下文；读取失败时自动回退到聊天记录。
+                </div>
+              </div>
             </section>
 
             <section class="setting-section" v-show="activeSection === 'expression'">
@@ -2124,9 +2134,8 @@ watch(
   margin-top: 4px;
   border: 1px solid rgba(255, 255, 255, 0.16);
   background: rgba(0, 0, 0, 0.22);
-  max-height: 58dvh;
-  overflow-y: auto;
-  overflow-x: hidden;
+  max-height: none;
+  overflow: visible;
   @include theme.tech-grid(20px, 0.02);
 }
 
@@ -2409,21 +2418,41 @@ watch(
   .panel-nav {
     border-right: none;
     border-bottom: 1px solid rgba(255, 255, 255, 0.16);
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
-    padding: 10px;
+    display: flex;
+    gap: 6px;
+    padding: 8px 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    @include theme.ark-scrollbar;
   }
 
   .nav-btn {
-    min-width: 0;
-    min-height: 54px;
-    padding: 8px 10px;
+    flex: 0 0 auto;
+    width: 150px;
+    min-height: 42px;
+    padding: 6px 10px;
     margin-bottom: 0;
+    grid-template-areas:
+      'idx label';
+    grid-template-columns: auto 1fr;
+    row-gap: 0;
+    align-items: center;
   }
 
   .panel-body {
     min-height: 0;
+  }
+
+  .nav-index {
+    font-size: 16px;
+  }
+
+  .nav-label {
+    font-size: 12px;
+  }
+
+  .nav-sub {
+    display: none;
   }
 
   .browser-overlay {
@@ -2446,8 +2475,35 @@ watch(
   }
 
   .emotion-preview-panel {
-    position: relative;
-    top: 0;
+    order: -1;
+    position: sticky;
+    top: 8px;
+    z-index: 8;
+    margin-bottom: 8px;
+    padding: 8px 10px 10px;
+    background: rgba(0, 0, 0, 0.9);
+  }
+
+  .emotion-preview-header {
+    margin-bottom: 6px;
+  }
+
+  .emotion-preview-canvas {
+    aspect-ratio: 16 / 9;
+    max-height: 210px;
+  }
+
+  .emotion-preview-controls {
+    margin-top: 8px;
+    gap: 6px;
+  }
+
+  .emotion-map-head {
+    position: static;
+  }
+
+  .emotion-preview-controls .hint {
+    display: none;
   }
 }
 
@@ -2466,21 +2522,44 @@ watch(
   }
 
   .panel-header {
-    padding: 12px;
+    padding: 10px 12px;
   }
 
   .header-title {
     h3 {
-      font-size: 17px;
+      font-size: 15px;
+      letter-spacing: 0.06em;
+    }
+
+    p {
+      display: none;
     }
   }
 
   .panel-nav {
-    padding: 8px;
+    padding: 6px 8px;
   }
 
   .nav-btn {
-    min-height: 50px;
+    width: 126px;
+    min-height: 38px;
+    padding: 5px 8px;
+  }
+
+  .nav-index {
+    font-size: 14px;
+  }
+
+  .nav-label {
+    font-size: 11px;
+    letter-spacing: 0.04em;
+  }
+
+  .close-btn {
+    min-width: 66px;
+    height: 28px;
+    padding: 0 8px;
+    font-size: 11px;
   }
 
   .panel-footer {
@@ -2488,7 +2567,7 @@ watch(
   }
 
   .panel-body {
-    padding: 10px 12px;
+    padding: 8px 10px;
   }
 
   .form-row {
@@ -2502,6 +2581,35 @@ watch(
 
   .btn {
     min-width: 86px;
+  }
+
+  .emotion-preview-panel {
+    top: 6px;
+    padding: 8px;
+  }
+
+  .emotion-preview-canvas {
+    max-height: 180px;
+  }
+
+  .emotion-map-head,
+  .emotion-map-row {
+    grid-template-columns: 56px 16px minmax(0, 1fr) minmax(0, 1fr) 42px;
+    gap: 6px;
+  }
+
+  .emotion-map-row {
+    padding: 8px;
+  }
+
+  .emotion-map-arrow {
+    font-size: 14px;
+  }
+
+  .emotion-map-preview-btn {
+    width: 38px;
+    height: 30px;
+    font-size: 12px;
   }
 
   .browser-overlay {

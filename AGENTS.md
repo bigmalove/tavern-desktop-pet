@@ -5,3 +5,4 @@
 @.cursor/rules/脚本.mdc
 @.cursor/rules/mvu变量框架.mdc
 @types
+酒馆桌面宠物.json只是最终发布用，调试不会加载，不要再有这方面疑问。

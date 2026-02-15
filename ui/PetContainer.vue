@@ -78,6 +78,9 @@ let globalOpenSettingsFn: (() => void) | null = null;
 let modelLoadTaskId = 0;
 let modelLoadingHideTimer: number | null = null;
 let statusCheckTimer: number | null = null;
+let viewportResizeSyncTimer: number | null = null;
+let boundWindowResizeHandler: (() => void) | null = null;
+let boundVisualViewportResizeHandler: (() => void) | null = null;
 
 const showMenu = ref(false);
 const menuAnchor = ref({ x: 0, y: 0 });
@@ -274,6 +277,107 @@ function clearStatusCheckTimer(): void {
   if (statusCheckTimer === null) return;
   window.clearTimeout(statusCheckTimer);
   statusCheckTimer = null;
+}
+
+function clearViewportResizeSyncTimer(): void {
+  if (viewportResizeSyncTimer === null) return;
+  window.clearTimeout(viewportResizeSyncTimer);
+  viewportResizeSyncTimer = null;
+}
+
+function syncStageAfterViewportResize(reason: string): void {
+  if (Live2DStage.isPreviewMounted()) return;
+
+  const stageSize = getStageSize(settings.value.petScale);
+  const recoverOnce = (label: string) => {
+    Live2DStage.resizeFloating(stageSize.width, stageSize.height);
+    const top = getTopWindow();
+    const stageEl = top.document.getElementById('desktop-pet-stage') as HTMLElement | null;
+    if (stageEl) {
+      stageEl.style.display = 'block';
+      stageEl.style.visibility = 'visible';
+      stageEl.style.opacity = '1';
+      stageEl.style.zIndex = '10000';
+    }
+
+    const stage = Live2DStage.getStage();
+    const hasModelOnStage = !!stage && stage.children.length > 0;
+    if (hasModelOnStage) {
+      Live2DManager.updateScale(stageSize.width, stageSize.height, 1);
+      log(`Viewport resize recovery synced model (${label})`);
+      return;
+    }
+
+    Live2DManager.mountToStage(stageSize.width, stageSize.height, 1);
+    log(`Viewport resize recovery remounted model (${label})`);
+  };
+
+  recoverOnce(`${reason}-pass1`);
+  window.setTimeout(() => {
+    if (Live2DStage.isPreviewMounted()) return;
+    recoverOnce(`${reason}-pass2`);
+  }, 220);
+
+  scheduleStatusCheck(`${reason}-recover`);
+}
+
+function scheduleViewportResizeSync(reason: string): void {
+  clearViewportResizeSyncTimer();
+  viewportResizeSyncTimer = window.setTimeout(() => {
+    viewportResizeSyncTimer = null;
+    syncStageAfterViewportResize(reason);
+  }, 160);
+}
+
+function bindViewportResizeRecovery(): void {
+  const top = getTopWindow();
+
+  boundWindowResizeHandler = () => {
+    scheduleViewportResizeSync('window-resize');
+  };
+
+  try {
+    top.addEventListener('resize', boundWindowResizeHandler, { passive: true });
+  } catch (e) {
+    logError('Failed to bind window.resize listener', e);
+    boundWindowResizeHandler = null;
+  }
+
+  const viewport = top.visualViewport;
+  if (!viewport) return;
+
+  boundVisualViewportResizeHandler = () => {
+    scheduleViewportResizeSync('visual-viewport-resize');
+  };
+
+  try {
+    viewport.addEventListener('resize', boundVisualViewportResizeHandler, { passive: true });
+  } catch (e) {
+    logError('Failed to bind visualViewport.resize listener', e);
+    boundVisualViewportResizeHandler = null;
+  }
+}
+
+function unbindViewportResizeRecovery(): void {
+  const top = getTopWindow();
+  if (boundWindowResizeHandler) {
+    try {
+      top.removeEventListener('resize', boundWindowResizeHandler);
+    } catch {
+      // ignore
+    }
+    boundWindowResizeHandler = null;
+  }
+
+  const viewport = top.visualViewport;
+  if (viewport && boundVisualViewportResizeHandler) {
+    try {
+      viewport.removeEventListener('resize', boundVisualViewportResizeHandler);
+    } catch {
+      // ignore
+    }
+    boundVisualViewportResizeHandler = null;
+  }
 }
 
 function renderModelLoadProgress(progress: ModelLoadProgress): void {
@@ -588,14 +692,17 @@ watch(
 );
 
 onMounted(() => {
+  bindViewportResizeRecovery();
   initPet();
 });
 
 onUnmounted(() => {
+  unbindViewportResizeRecovery();
   unregisterGlobalOpenSettings();
   modelLoadTaskId++;
   clearModelLoadingHideTimer();
   clearStatusCheckTimer();
+  clearViewportResizeSyncTimer();
   Live2DStage.hideLoadingProgress();
   ChatMonitor.destroy();
   Commentator.destroy();
