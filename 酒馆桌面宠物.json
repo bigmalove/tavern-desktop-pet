@@ -1,8 +1,8 @@
 ﻿{
-  "id": "galgame-live-dev-001",
+  "id": "galgame-live-dev-002",
   "name": "桌面宠物",
-  "content": "import 'https://gcore.jsdelivr.net/gh/bigmalove/tavern-desktop-pet@v0.1/dist/index.js'",
-  "info": "桌面宠物 v0.1",
+  "content": "import 'https://gcore.jsdelivr.net/gh/bigmalove/tavern-desktop-pet@v0.2/dist/index.js'",
+  "info": "桌面宠物 v0.2",
   "buttons": [
     {
       "name": "桌面宠物",
