@@ -133,7 +133,7 @@
                     <input type="number" v-model.number="settings.apiConfig.max_tokens" min="1" max="4096" />
                   </div>
                   <div class="form-group half">
-                    <label>Temperature ({{ settings.apiConfig.temperature.toFixed(1) }})</label>
+                    <label>Temperature ({{ temperatureLabel }})</label>
                     <input
                       type="range"
                       v-model.number="settings.apiConfig.temperature"
@@ -152,7 +152,7 @@
                 <div v-if="showAdvanced" class="advanced-params">
                   <div class="form-row">
                     <div class="form-group half">
-                      <label>Frequency Penalty ({{ settings.apiConfig.frequency_penalty.toFixed(1) }})</label>
+                      <label>Frequency Penalty ({{ frequencyPenaltyLabel }})</label>
                       <input
                         type="range"
                         v-model.number="settings.apiConfig.frequency_penalty"
@@ -162,7 +162,7 @@
                       />
                     </div>
                     <div class="form-group half">
-                      <label>Presence Penalty ({{ settings.apiConfig.presence_penalty.toFixed(1) }})</label>
+                      <label>Presence Penalty ({{ presencePenaltyLabel }})</label>
                       <input
                         type="range"
                         v-model.number="settings.apiConfig.presence_penalty"
@@ -174,7 +174,7 @@
                   </div>
                   <div class="form-row">
                     <div class="form-group half">
-                      <label>Top P ({{ settings.apiConfig.top_p.toFixed(2) }})</label>
+                      <label>Top P ({{ topPLabel }})</label>
                       <input
                         type="range"
                         v-model.number="settings.apiConfig.top_p"
@@ -234,7 +234,7 @@
               </div>
 
               <div class="form-group">
-                <label>宠物缩放 ({{ settings.petScale.toFixed(2) }})</label>
+                <label>宠物缩放 ({{ petScaleLabel }})</label>
                 <input
                   type="range"
                   v-model.number="settings.petScale"
@@ -276,6 +276,32 @@
                   rows="4"
                   placeholder="输入自定义的系统提示词..."
                 ></textarea>
+              </div>
+
+              <div class="form-group">
+                <label>角色名（留空则关闭角色视角）</label>
+                <input
+                  type="text"
+                  v-model="settings.roleplayName"
+                  placeholder="例如：阿米娅"
+                />
+                <div class="hint">
+                  填写后，吐槽和手动聊天会以该角色视角发言。
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label>
+                  <input
+                    type="checkbox"
+                    v-model="settings.sendCharacterCardContent"
+                    :disabled="!settings.roleplayName.trim()"
+                  />
+                  发送角色卡内容（当前聊天角色）
+                </label>
+                <div class="hint">
+                  开启后会附带当前角色卡的描述/性格/场景等内容，帮助贴合人设。
+                </div>
               </div>
 
               <div class="form-group">
@@ -787,6 +813,7 @@ import {
   API_SOURCES,
   COMMENT_STYLES,
   COMMENT_TRIGGER_MODE_OPTIONS,
+  DEFAULTS,
   EMOTION_TAGS,
   RECOMMENDED_MODELS,
   SCRIPT_NAME,
@@ -828,6 +855,66 @@ const activeSection = ref<SectionKey>('api');
 
 const store = useSettingsStore();
 const { settings } = storeToRefs(store);
+
+function toBoundedNumber(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return clamp(parsed, min, max);
+}
+
+function ensureNumericSettingsIntegrity(): void {
+  if (!settings.value.apiConfig || typeof settings.value.apiConfig !== 'object') {
+    settings.value.apiConfig = {
+      url: '',
+      apiKey: '',
+      model: 'gpt-4o-mini',
+      source: 'openai',
+      max_tokens: DEFAULTS.MAX_TOKENS,
+      temperature: DEFAULTS.TEMPERATURE,
+      frequency_penalty: DEFAULTS.FREQUENCY_PENALTY,
+      presence_penalty: DEFAULTS.PRESENCE_PENALTY,
+      top_p: DEFAULTS.TOP_P,
+      top_k: DEFAULTS.TOP_K,
+      usePresetSampling: false,
+      sendWorldInfo: false,
+    } as any;
+  }
+
+  const api = settings.value.apiConfig as any;
+  api.max_tokens = Math.round(toBoundedNumber(api.max_tokens, DEFAULTS.MAX_TOKENS, 1, 4096));
+  api.temperature = toBoundedNumber(api.temperature, DEFAULTS.TEMPERATURE, 0, 2);
+  api.frequency_penalty = toBoundedNumber(api.frequency_penalty, DEFAULTS.FREQUENCY_PENALTY, -2, 2);
+  api.presence_penalty = toBoundedNumber(api.presence_penalty, DEFAULTS.PRESENCE_PENALTY, -2, 2);
+  api.top_p = toBoundedNumber(api.top_p, DEFAULTS.TOP_P, 0, 1);
+  api.top_k = Math.round(toBoundedNumber(api.top_k, DEFAULTS.TOP_K, 0, 500));
+
+  if (typeof api.url !== 'string') api.url = String(api.url ?? '');
+  if (typeof api.apiKey !== 'string') api.apiKey = String(api.apiKey ?? '');
+  if (typeof api.model !== 'string') api.model = String(api.model ?? 'gpt-4o-mini');
+  if (typeof api.source !== 'string') api.source = String(api.source ?? 'openai');
+  api.usePresetSampling = api.usePresetSampling === true;
+  api.sendWorldInfo = api.sendWorldInfo === true;
+
+  settings.value.petScale = toBoundedNumber(settings.value.petScale, DEFAULTS.PET_SCALE, 0.1, 3);
+}
+
+const temperatureLabel = computed(() =>
+  toBoundedNumber(settings.value.apiConfig?.temperature, DEFAULTS.TEMPERATURE, 0, 2).toFixed(1),
+);
+const frequencyPenaltyLabel = computed(() =>
+  toBoundedNumber(settings.value.apiConfig?.frequency_penalty, DEFAULTS.FREQUENCY_PENALTY, -2, 2).toFixed(1),
+);
+const presencePenaltyLabel = computed(() =>
+  toBoundedNumber(settings.value.apiConfig?.presence_penalty, DEFAULTS.PRESENCE_PENALTY, -2, 2).toFixed(1),
+);
+const topPLabel = computed(() =>
+  toBoundedNumber(settings.value.apiConfig?.top_p, DEFAULTS.TOP_P, 0, 1).toFixed(2),
+);
+const petScaleLabel = computed(() =>
+  toBoundedNumber(settings.value.petScale, DEFAULTS.PET_SCALE, 0.1, 3).toFixed(2),
+);
+
+ensureNumericSettingsIntegrity();
 
 const recommendedModels = RECOMMENDED_MODELS;
 const commentStyles = COMMENT_STYLES;
@@ -1687,6 +1774,7 @@ watch(
   () => props.visible,
   (visible) => {
     if (!visible) return;
+    ensureNumericSettingsIntegrity();
     activeSection.value = 'api';
     showEmotionAdvanced.value = false;
     ttsEnabled.value = getTTSEnabled();

@@ -1,7 +1,7 @@
 import { useSettingsStore } from '../core/settings';
 import { error, log, warn } from '../utils/dom';
 import { ChatMonitor } from './monitor';
-import { buildChatPrompt, buildPrompt } from './prompt-templates';
+import { buildChatPrompt, buildPrompt, type RoleplayPromptOptions } from './prompt-templates';
 
 type CommentCallback = (text: string, isDone: boolean) => void;
 
@@ -59,7 +59,17 @@ export const Commentator = {
         return;
       }
 
-      const { system, user } = buildPrompt(s.commentStyle, s.customPrompt, chatMessages, !!s.emotionCotEnabled);
+      const roleplayOptions = this._resolveRoleplayOptions({
+        roleName: s.roleplayName,
+        sendCharacterCardContent: !!s.sendCharacterCardContent,
+      });
+      const { system, user } = buildPrompt(
+        s.commentStyle,
+        s.customPrompt,
+        chatMessages,
+        !!s.emotionCotEnabled,
+        roleplayOptions,
+      );
 
       this._latestStreamText = '';
       let result: string;
@@ -119,12 +129,17 @@ export const Commentator = {
       const s = store.settings;
 
       const chatMessages = this._getChatContext(s.maxChatContext);
+      const roleplayOptions = this._resolveRoleplayOptions({
+        roleName: s.roleplayName,
+        sendCharacterCardContent: !!s.sendCharacterCardContent,
+      });
       const { system, user } = buildChatPrompt(
         s.commentStyle,
         s.customPrompt,
         chatMessages,
         input,
         !!s.emotionCotEnabled,
+        roleplayOptions,
       );
 
       this._latestStreamText = '';
@@ -350,6 +365,99 @@ export const Commentator = {
       warn('获取聊天记录失败:', e);
       return [];
     }
+  },
+
+  _resolveRoleplayOptions(config: {
+    roleName?: string;
+    sendCharacterCardContent?: boolean;
+  }): RoleplayPromptOptions | undefined {
+    const roleName = String(config.roleName || '').trim();
+    if (!roleName) {
+      return undefined;
+    }
+
+    const roleplay: RoleplayPromptOptions = { roleName };
+    if (config.sendCharacterCardContent) {
+      const characterCardContent = this._getCurrentCharacterCardContent();
+      if (characterCardContent) {
+        roleplay.characterCardContent = characterCardContent;
+      } else {
+        log('角色卡内容开关已开启，但未读取到可用角色卡文本');
+      }
+    }
+
+    return roleplay;
+  },
+
+  _getCurrentCharacterCardContent(): string {
+    try {
+      const context = SillyTavern?.getContext?.() as any;
+      if (!context) {
+        return '';
+      }
+
+      const characters = Array.isArray(context.characters) ? context.characters : [];
+      if (characters.length === 0) {
+        return '';
+      }
+
+      const charIdRaw = context.characterId;
+      let current: any = null;
+
+      if (charIdRaw !== undefined && charIdRaw !== null) {
+        const idText = String(charIdRaw).trim();
+        const idNum = Number(idText);
+        if (Number.isFinite(idNum) && idNum >= 0 && idNum < characters.length) {
+          current = characters[idNum];
+        }
+      }
+
+      if (!current) {
+        const currentName = String(context.name2 || '').trim();
+        if (currentName) {
+          current = characters.find((item: any) => String(item?.name || '').trim() === currentName) || null;
+        }
+      }
+
+      if (!current && characters.length === 1) {
+        current = characters[0];
+      }
+
+      if (!current) {
+        return '';
+      }
+
+      const fields: Array<[string, unknown]> = [
+        ['角色名', current.name],
+        ['角色描述', current.description ?? current.data?.description],
+        ['角色性格', current.personality ?? current.data?.personality],
+        ['场景设定', current.scenario ?? current.data?.scenario],
+        ['开场白', current.first_mes ?? current.data?.first_mes],
+        ['示例对话', current.mes_example ?? current.data?.mes_example],
+        ['系统提示', current.data?.system_prompt],
+        ['历史后提示', current.data?.post_history_instructions],
+      ];
+
+      const lines = fields
+        .map(([label, value]) => {
+          const text = this._normalizeCharacterCardField(value);
+          return text ? `${label}: ${text}` : '';
+        })
+        .filter((line) => !!line);
+
+      return lines.join('\n');
+    } catch (e) {
+      warn('读取角色卡内容失败:', e);
+      return '';
+    }
+  },
+
+  _normalizeCharacterCardField(value: unknown): string {
+    return String(value ?? '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/\r\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
   },
 
   _getTamakoTodaySpecialContent(): string {

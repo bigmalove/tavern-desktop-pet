@@ -77,6 +77,8 @@ export const DEFAULTS = {
   AUTO_MOTION_LOOP: true,
   COMMENT_TRIGGER_MODE: 'ai' as CommentTriggerMode,
   COMMENT_STYLE: '毒舌吐槽' as CommentStyle,
+  ROLEPLAY_NAME: '',
+  SEND_CHARACTER_CARD_CONTENT: false,
   AUTO_TRIGGER: true,
   TRIGGER_INTERVAL: 3,
   TRIGGER_PROBABILITY: 60,

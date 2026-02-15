@@ -8,6 +8,7 @@ import { SCRIPT_NAME } from './core/constants';
 import { useUiStore } from './core/ui';
 
 const BUILD_TAG = '20260215.04';
+const LEGACY_MENU_BUTTON_LABELS = new Set(['桌面宠物', '桌面宠物设置']);
 const SETTINGS_LABEL = '桌面宠物设置';
 const OPEN_SETTINGS_FN_KEY = '__desktopPetOpenSettings_v2';
 
@@ -137,23 +138,27 @@ function removeExtensionsMenuItem(): void {
   $(`#${EXTENSIONS_MENU_CONTAINER_ID}`, parentDoc).remove();
 }
 
+function removeLegacyMenuButtons(): void {
+  try {
+    const parentDoc = getParentDocument();
+    $('.qr--button.menu_button.interactable', parentDoc)
+      .filter((_idx, el) => LEGACY_MENU_BUTTON_LABELS.has(String($(el).text() || '').trim()))
+      .remove();
+  } catch (e) {
+    warn('清理旧菜单按钮失败', e);
+  }
+}
+
 $(() => {
   // 传送样式到父窗口
   teleport_style();
 
   try {
     log(`入口开始初始化(${BUILD_TAG})`);
-
-    // 脚本按钮（酒馆助手脚本库界面）
-    try {
-      if (typeof eventOn === 'function' && typeof getButtonEvent === 'function') {
-        eventOn(getButtonEvent('桌面宠物设置'), () => {
-          uiStore.openSettings();
-        });
-      }
-    } catch (e) {
-      logError('设置按钮事件注册失败（不影响扩展菜单打开）', e);
-    }
+    removeLegacyMenuButtons();
+    window.setTimeout(() => {
+      removeLegacyMenuButtons();
+    }, 1200);
 
     // 创建 Vue 挂载点并添加到酒馆页面
     try {
@@ -193,6 +198,7 @@ $(() => {
 });
 
 $(window).on('pagehide', () => {
+  removeLegacyMenuButtons();
   removeExtensionsMenuItem();
   deteleport_style();
   $('#desktop-pet-app').remove();

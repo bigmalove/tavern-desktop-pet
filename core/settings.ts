@@ -88,6 +88,8 @@ const SettingsSchema = z
     commentStyle: z.enum(COMMENT_STYLES).default(DEFAULTS.COMMENT_STYLE),
     commentTriggerMode: z.enum(COMMENT_TRIGGER_MODES).default(DEFAULTS.COMMENT_TRIGGER_MODE),
     customPrompt: z.string().default(''),
+    roleplayName: z.string().default(DEFAULTS.ROLEPLAY_NAME),
+    sendCharacterCardContent: z.boolean().default(DEFAULTS.SEND_CHARACTER_CARD_CONTENT),
     autoTrigger: z.boolean().default(DEFAULTS.AUTO_TRIGGER),
     triggerInterval: z.number().min(1).max(100).default(DEFAULTS.TRIGGER_INTERVAL),
     triggerProbability: z.number().min(0).max(100).default(DEFAULTS.TRIGGER_PROBABILITY),

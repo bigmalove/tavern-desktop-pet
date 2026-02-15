@@ -173,6 +173,8 @@ index.ts
 | `petPosition` | 宠物位置 (x, y) | 右下角 |
 | `commentStyle` | 吐槽风格 | `毒舌吐槽` |
 | `customPrompt` | 自定义提示词 | — |
+| `roleplayName` | 角色名（留空关闭角色视角） | — |
+| `sendCharacterCardContent` | 是否附带当前角色卡内容 | `false` |
 | `autoTrigger` | 是否自动触发 | `true` |
 | `triggerInterval` | 每 N 条消息触发 | `3` |
 | `triggerProbability` | 触发概率 (0-100) | `60` |

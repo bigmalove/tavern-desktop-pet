@@ -811,7 +811,8 @@ export const Live2DStage = {
     interactionTarget.addEventListener('wheel', (e: WheelEvent) => {
       e.preventDefault();
       const delta = e.deltaY > 0 ? -0.05 : 0.05;
-      const newScale = Math.max(0.1, Math.min(3, options.scale + delta));
+      const baseScale = Number.isFinite(options.scale) ? options.scale : 1;
+      const newScale = Math.max(0.1, Math.min(3, baseScale + delta));
       options.scale = newScale;
       options.onScaleChange?.(newScale);
     }, { passive: false });

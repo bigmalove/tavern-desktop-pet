@@ -6,6 +6,11 @@ interface StyleTemplate {
   responseFormat: string;
 }
 
+export interface RoleplayPromptOptions {
+  roleName?: string;
+  characterCardContent?: string;
+}
+
 /** 内置吐槽风格提示词模板 */
 export const PROMPT_TEMPLATES: Record<Exclude<CommentStyle, '自定义'>, StyleTemplate> = {
   毒舌吐槽: {
@@ -82,6 +87,28 @@ function appendEmotionCotFormat(responseFormat: string): string {
   );
 }
 
+function buildRoleplayInstruction(roleplay?: RoleplayPromptOptions): string {
+  const roleName = String(roleplay?.roleName || '').trim();
+  if (!roleName) {
+    return '';
+  }
+
+  const lines = [
+    '【角色视角要求】',
+    `- 你必须以“${roleName}”的第一人称视角发言。`,
+    '- 语气、态度、措辞要贴合该角色，不要跳出角色。',
+    '- 不要提及你是 AI、语言模型或桌面宠物。',
+  ];
+
+  const characterCardContent = String(roleplay?.characterCardContent || '').trim();
+  if (characterCardContent) {
+    lines.push('【角色卡内容（参考）】');
+    lines.push(characterCardContent);
+  }
+
+  return lines.join('\n');
+}
+
 function buildContextLines(chatContext: Array<{ role: string; name: string; message: string }>): string {
   return chatContext
     .map((msg) => `${msg.name}(${msg.role}): ${String(msg.message ?? '')}`)
@@ -96,14 +123,22 @@ export function buildPrompt(
   customPrompt: string,
   chatContext: Array<{ role: string; name: string; message: string }>,
   emotionCotEnabled = false,
+  roleplay?: RoleplayPromptOptions,
 ): { system: string; user: string } {
   const { systemPrompt, responseFormat } = resolvePromptTemplate(style, customPrompt);
   const finalFormat = emotionCotEnabled ? appendEmotionCotFormat(responseFormat) : responseFormat;
+  const roleplayInstruction = buildRoleplayInstruction(roleplay);
 
   // 构建聊天上下文摘要
   const contextLines = buildContextLines(chatContext);
 
-  const system = `${systemPrompt}\n\n回复格式要求：${finalFormat}`;
+  const systemParts = [systemPrompt];
+  if (roleplayInstruction) {
+    systemParts.push(roleplayInstruction);
+  }
+  systemParts.push(`回复格式要求：${finalFormat}`);
+
+  const system = systemParts.join('\n\n');
   const user = `以下是最近的聊天记录，请对最新内容做出评论：\n\n${contextLines}`;
 
   return { system, user };
@@ -118,15 +153,25 @@ export function buildChatPrompt(
   chatContext: Array<{ role: string; name: string; message: string }>,
   userMessage: string,
   emotionCotEnabled = false,
+  roleplay?: RoleplayPromptOptions,
 ): { system: string; user: string } {
   const { systemPrompt } = resolvePromptTemplate(style, customPrompt);
   const responseFormat = getChatResponseFormat(style);
   const finalFormat = emotionCotEnabled ? appendEmotionCotFormat(responseFormat) : responseFormat;
+  const roleplayInstruction = buildRoleplayInstruction(roleplay);
+  const roleName = String(roleplay?.roleName || '').trim();
 
   const contextLines = buildContextLines(chatContext);
   const safeUserMessage = String(userMessage || '').trim();
 
-  const system = `${systemPrompt}\n\n回复格式要求：${finalFormat}\n\n你现在需要以桌面宠物的身份与用户聊天。`;
+  const systemParts = [systemPrompt];
+  if (roleplayInstruction) {
+    systemParts.push(roleplayInstruction);
+  }
+  systemParts.push(`回复格式要求：${finalFormat}`);
+  systemParts.push(roleName ? '你现在需要保持该角色设定与用户聊天。' : '你现在需要以桌面宠物的身份与用户聊天。');
+
+  const system = systemParts.join('\n\n');
 
   const user =
     `以下是最近的聊天记录（仅供参考，不要逐字复述）：\n\n` +

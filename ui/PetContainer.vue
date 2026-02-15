@@ -48,6 +48,7 @@ import { TTSManager } from '../audio/tts-manager';
 import { Commentator } from '../chat/commentator';
 import { parseEmotionCotText } from '../chat/emotion-cot';
 import { ChatMonitor } from '../chat/monitor';
+import { DEFAULTS, type EmotionTag } from '../core/constants';
 import { getEmotionConfigByTag } from '../core/emotion';
 import { useSettingsStore } from '../core/settings';
 import { useUiStore } from '../core/ui';
@@ -55,7 +56,6 @@ import { Live2DManager, type ModelLoadProgress } from '../live2d/manager';
 import { matchLive2DExpression, matchLive2DMotion } from '../live2d/expression-motion';
 import { LipSyncManager, setLipSyncRefs } from '../live2d/lip-sync';
 import { Live2DStage } from '../live2d/stage';
-import type { EmotionTag } from '../core/constants';
 import type { GestureEvent } from '../utils/gesture-recognizer';
 import { error as logError, log } from '../utils/dom';
 import ChatBubble from './ChatBubble.vue';
@@ -93,11 +93,6 @@ function getTopWindow(): Window {
   } catch {
     return window;
   }
-}
-
-function openSettingsPanel(): void {
-  uiStore.openSettings();
-  log('打开设置面板');
 }
 
 function getCurrentCharacterId(): string {
@@ -260,11 +255,17 @@ function closePet(): void {
 }
 
 function getStageSize(scale: number): { width: number; height: number } {
-  const safeScale = Math.max(0.1, Math.min(3, scale || 1));
+  const safeScale = normalizePetScale(scale);
   return {
     width: Math.max(1, Math.round(BASE_STAGE_WIDTH * safeScale)),
     height: Math.max(1, Math.round(BASE_STAGE_HEIGHT * safeScale)),
   };
+}
+
+function normalizePetScale(value: unknown): number {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(parsed)) return DEFAULTS.PET_SCALE;
+  return Math.max(0.1, Math.min(3, parsed));
 }
 
 function clearModelLoadingHideTimer(): void {
@@ -499,19 +500,6 @@ async function initPet() {
       logError('TTS 模块初始化失败（不影响模型显示）', e);
     }
 
-    try {
-      if (typeof appendInexistentScriptButtons === 'function') {
-        appendInexistentScriptButtons([{ name: '桌面宠物设置', visible: true }]);
-      }
-      if (typeof eventOn === 'function' && typeof getButtonEvent === 'function') {
-        eventOn(getButtonEvent('桌面宠物设置'), () => {
-          openSettingsPanel();
-        });
-      }
-    } catch (e) {
-      notifyInitError('桌面宠物设置按钮注册失败（不影响模型显示）', e);
-    }
-
     Commentator.setCallback((text: string, isDone: boolean) => {
       const parsed = parseEmotionCotText(text, {
         enabled: !!settings.value.emotionCotEnabled,
@@ -587,18 +575,25 @@ async function initPet() {
 
     Live2DManager.setAutoMotionLoopEnabled(s.autoMotionLoop);
 
-    const stageSize = getStageSize(s.petScale);
+    const initialScale = normalizePetScale(s.petScale);
+    if (initialScale !== s.petScale) {
+      settings.value.petScale = initialScale;
+    }
+    const stageSize = getStageSize(initialScale);
 
     const created = Live2DStage.create({
       width: stageSize.width,
       height: stageSize.height,
       position: { x: s.petPosition.x, y: s.petPosition.y },
-      scale: s.petScale,
+      scale: initialScale,
       onPositionChange: (x: number, y: number) => {
         settings.value.petPosition = { x, y };
       },
       onScaleChange: (scale: number) => {
-        settings.value.petScale = scale;
+        const safeScale = normalizePetScale(scale);
+        if (safeScale !== settings.value.petScale) {
+          settings.value.petScale = safeScale;
+        }
       },
       onTap: (_e: GestureEvent) => {
         log('单击宠物 -> 播放动作（不触发 LLM）');
@@ -683,7 +678,12 @@ watch(
 watch(
   () => settings.value.petScale,
   (scale) => {
-    const stageSize = getStageSize(scale);
+    const safeScale = normalizePetScale(scale);
+    if (safeScale !== scale) {
+      settings.value.petScale = safeScale;
+      return;
+    }
+    const stageSize = getStageSize(safeScale);
     Live2DStage.resizeFloating(stageSize.width, stageSize.height);
     if (!Live2DStage.isPreviewMounted()) {
       Live2DManager.updateScale(stageSize.width, stageSize.height, 1);
