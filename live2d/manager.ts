@@ -11,6 +11,9 @@ import {
   collectMotionGroupNames,
   type Live2DMotionEntry,
 } from './expression-motion';
+
+const TICKER_REGISTERED_FLAG = '__desktopPetLive2dTickerV1';
+
 export type ModelLoadProgress = {
   percent: number;
   message: string;
@@ -766,7 +769,17 @@ export const Live2DManager = {
       if (typeof Live2DModel?.registerTicker !== 'function') {
         throw new Error('Live2DModel.registerTicker 不可用');
       }
-      Live2DModel.registerTicker(PIXI.Ticker);
+
+      // 防止脚本重载后重复注册 ticker，导致动画速度叠加
+      const lastRegisteredTicker = (Live2DModel as any)[TICKER_REGISTERED_FLAG] as unknown;
+      if (lastRegisteredTicker !== PIXI.Ticker) {
+        Live2DModel.registerTicker(PIXI.Ticker);
+        (Live2DModel as any)[TICKER_REGISTERED_FLAG] = PIXI.Ticker;
+        log('Live2D ticker 注册完成');
+      } else {
+        log('Live2D ticker 已注册，跳过重复注册');
+      }
+
       this._runtime = runtime;
       this.isReady = true;
       log('Live2DManager 初始化完成');

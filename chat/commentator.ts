@@ -54,8 +54,6 @@ export const Commentator = {
       // 构建提示词
       const { system, user } = buildPrompt(s.commentStyle, s.customPrompt, chatMessages, !!s.emotionCotEnabled);
 
-      // 标记自身生成，防止 GENERATION_ENDED 误触发
-      ChatMonitor.markSelfGeneration();
       this._latestStreamText = '';
 
       let result: string;
@@ -64,6 +62,8 @@ export const Commentator = {
         // 自定义 API 模式
         result = await this._generateCustom(system, user, s.apiConfig);
       } else {
+        // 标记自身生成，防止 GENERATION_ENDED 误触发
+        ChatMonitor.markSelfGeneration();
         // 酒馆主 API 模式
         result = await this._generateTavern(system, user, s.apiConfig.max_tokens, s.apiConfig.temperature);
       }
@@ -111,14 +111,14 @@ export const Commentator = {
         !!s.emotionCotEnabled,
       );
 
-      // 标记自身生成，防止 GENERATION_ENDED 误触发
-      ChatMonitor.markSelfGeneration();
       this._latestStreamText = '';
 
       let result: string;
       if (s.apiMode === 'custom' && s.apiConfig.url) {
         result = await this._generateCustom(system, user, s.apiConfig);
       } else {
+        // 标记自身生成，防止 GENERATION_ENDED 误触发
+        ChatMonitor.markSelfGeneration();
         result = await this._generateTavern(system, user, s.apiConfig.max_tokens, s.apiConfig.temperature);
       }
 
@@ -181,124 +181,108 @@ export const Commentator = {
       usePresetSampling: boolean;
     },
   ): Promise<string> {
-    // 设置流式监听
-    this._setupStreamListener();
+    const apiUrl = String(apiConfig.url || '').trim();
+    const apiKey = String(apiConfig.apiKey || '').trim();
+    const model = String(apiConfig.model || '')
+      .trim()
+      .replace(/^models\//, '');
 
-    try {
-      const usePreset = apiConfig.usePresetSampling;
-      const is422Error = (err: unknown): boolean => {
-        const msg = err instanceof Error ? err.message : String(err);
-        return /\b422\b/.test(msg);
-      };
-
-      const baseCustomApi = {
-        apiurl: String(apiConfig.url || '').trim(),
-        key: String(apiConfig.apiKey || '').trim() || undefined,
-        model: String(apiConfig.model || '').trim(),
-        source: String(apiConfig.source || 'openai').trim() || 'openai',
-      };
-
-      if (!baseCustomApi.model) {
-        throw new Error('自定义 API 模型不能为空，请先在设置中填写或选择模型。');
-      }
-
-      const requestWithCustomApi = async (customApi: {
-        apiurl: string;
-        key?: string;
-        model: string;
-        source: string;
-        max_tokens?: 'same_as_preset' | 'unset' | number;
-        temperature?: 'same_as_preset' | 'unset' | number;
-        frequency_penalty?: 'same_as_preset' | 'unset' | number;
-        presence_penalty?: 'same_as_preset' | 'unset' | number;
-        top_p?: 'same_as_preset' | 'unset' | number;
-        top_k?: 'same_as_preset' | 'unset' | number;
-      }): Promise<string> => {
-        return generateRaw({
-          should_silence: true,
-          should_stream: true,
-          custom_api: customApi,
-          ordered_prompts: [
-            { role: 'system', content: system },
-            { role: 'user', content: user },
-          ],
-        });
-      };
-
-      const fullCustomApi = {
-        ...baseCustomApi,
-        max_tokens: usePreset ? ('same_as_preset' as const) : apiConfig.max_tokens,
-        temperature: usePreset ? ('same_as_preset' as const) : apiConfig.temperature,
-        frequency_penalty: usePreset ? ('same_as_preset' as const) : apiConfig.frequency_penalty,
-        presence_penalty: usePreset ? ('same_as_preset' as const) : apiConfig.presence_penalty,
-        top_p: usePreset ? ('same_as_preset' as const) : apiConfig.top_p,
-        top_k: usePreset ? ('same_as_preset' as const) : apiConfig.top_k,
-      };
-
-      // 兼容常见 OpenAI 兼容后端：禁用最容易触发 422 的参数。
-      const safeCustomApi = {
-        ...baseCustomApi,
-        max_tokens: usePreset ? ('same_as_preset' as const) : apiConfig.max_tokens,
-        temperature: usePreset ? ('same_as_preset' as const) : apiConfig.temperature,
-        frequency_penalty: 'unset' as const,
-        presence_penalty: 'unset' as const,
-        top_p: usePreset ? ('same_as_preset' as const) : apiConfig.top_p,
-        top_k: 'unset' as const,
-      };
-
-      const minimalCustomApi = {
-        ...baseCustomApi,
-        max_tokens: 'unset' as const,
-        temperature: 'unset' as const,
-        frequency_penalty: 'unset' as const,
-        presence_penalty: 'unset' as const,
-        top_p: 'unset' as const,
-        top_k: 'unset' as const,
-      };
-
-      const attempts: Array<{
-        name: string;
-        customApi: typeof fullCustomApi;
-      }> = [
-        { name: 'full', customApi: fullCustomApi },
-        { name: 'safe', customApi: safeCustomApi },
-      ];
-
-      if (baseCustomApi.source !== 'openai') {
-        attempts.push({ name: 'safe-openai', customApi: { ...safeCustomApi, source: 'openai' } });
-      }
-
-      attempts.push({ name: 'minimal', customApi: minimalCustomApi });
-
-      if (baseCustomApi.source !== 'openai') {
-        attempts.push({
-          name: 'minimal-openai',
-          customApi: { ...minimalCustomApi, source: 'openai' },
-        });
-      }
-
-      let lastError: unknown = null;
-
-      for (let i = 0; i < attempts.length; i++) {
-        const attempt = attempts[i];
-        try {
-          if (i > 0) {
-            warn(`自定义 API 参数回退重试：${attempt.name}`);
-          }
-          return await requestWithCustomApi(attempt.customApi);
-        } catch (e) {
-          lastError = e;
-          const canRetry = is422Error(e) && i < attempts.length - 1;
-          if (!canRetry) throw e;
-          const next = attempts[i + 1];
-          warn(`自定义 API 返回 422，准备继续回退参数（${attempt.name} -> ${next.name}）`);
-        }
-      }
-
-      throw lastError instanceof Error ? lastError : new Error(String(lastError));
-    } finally {
-      this._cleanupStreamListener();
+    if (!apiUrl) {
+      throw new Error('自定义 API URL 不能为空。');
     }
+    if (!model) {
+      throw new Error('自定义 API 模型不能为空，请先在设置中填写或选择模型。');
+    }
+
+    const usePreset = !!apiConfig.usePresetSampling;
+    const requestUrl = '/api/backends/chat-completions/generate';
+    const orderedPrompts = [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ];
+
+    const buildAttemptBody = (attempt: 'full' | 'safe' | 'minimal') => {
+      const body: Record<string, unknown> = {
+        messages: orderedPrompts,
+        model,
+        stream: false,
+        chat_completion_source: 'custom',
+        custom_prompt_post_processing: 'strict',
+        reverse_proxy: apiUrl,
+        custom_url: apiUrl,
+        custom_include_headers: apiKey ? `Authorization: Bearer ${apiKey}` : '',
+      };
+
+      // 按数据库插件做法进行分级回退，尽量兼容不同 OpenAI 兼容后端。
+      if (!usePreset && attempt !== 'minimal') {
+        body.max_tokens = apiConfig.max_tokens;
+        body.temperature = apiConfig.temperature;
+        body.top_p = apiConfig.top_p;
+      }
+
+      if (!usePreset && attempt === 'full') {
+        body.frequency_penalty = apiConfig.frequency_penalty;
+        body.presence_penalty = apiConfig.presence_penalty;
+        body.top_k = apiConfig.top_k;
+      }
+
+      return body;
+    };
+
+    const requestWithAttempt = async (attempt: 'full' | 'safe' | 'minimal'): Promise<string> => {
+      const response = await fetch(requestUrl, {
+        method: 'POST',
+        headers: {
+          ...SillyTavern.getRequestHeaders(),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(buildAttemptBody(attempt)),
+      });
+
+      if (!response.ok) {
+        const errTxt = await response.text();
+        const err = new Error(`API请求失败: ${response.status} ${errTxt || response.statusText}`);
+        (err as Error & { status?: number }).status = response.status;
+        throw err;
+      }
+
+      const data = (await response.json()) as any;
+      if (data?.choices?.[0]?.message?.content) {
+        return String(data.choices[0].message.content).trim();
+      }
+      if (typeof data?.content === 'string') {
+        return data.content.trim();
+      }
+      if (typeof data?.text === 'string') {
+        return data.text.trim();
+      }
+
+      const details = typeof data === 'object' ? JSON.stringify(data) : String(data);
+      throw new Error(`API调用返回无效响应: ${details}`);
+    };
+
+    const attempts: Array<'full' | 'safe' | 'minimal'> = ['full', 'safe', 'minimal'];
+    let lastError: unknown = null;
+
+    for (let i = 0; i < attempts.length; i++) {
+      const attempt = attempts[i];
+      try {
+        if (i > 0) {
+          warn(`自定义 API 参数回退重试：${attempt}`);
+        }
+        return await requestWithAttempt(attempt);
+      } catch (e) {
+        lastError = e;
+        const status = (e as { status?: number } | null)?.status;
+        const msg = e instanceof Error ? e.message : String(e);
+        const is422 = status === 422 || /\b422\b/.test(msg);
+        const canRetry = is422 && i < attempts.length - 1;
+        if (!canRetry) throw e;
+        warn(`自定义 API 返回 422，准备继续回退参数（${attempt} -> ${attempts[i + 1]}）`);
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
   },
 
   /**
