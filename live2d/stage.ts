@@ -1,14 +1,15 @@
-import { log, warn } from '../utils/dom';
+﻿import { log, warn } from '../utils/dom';
 import { GestureRecognizer, type GestureEvent } from '../utils/gesture-recognizer';
 import { Live2DLoader } from './loader';
 
 /**
- * Live2D PIXI 渲染舞台
- * 在酒馆页面创建 fixed 定位的 canvas，支持拖拽和缩放
+ * Live2D PIXI 娓叉煋鑸炲彴
+ * 鍦ㄩ厭棣嗛〉闈㈠垱寤?fixed 瀹氫綅鐨?canvas锛屾敮鎸佹嫋鎷藉拰缂╂斁
  */
 export const Live2DStage = {
   app: null as any,
   canvas: null as HTMLCanvasElement | null,
+  glContext: null as WebGLRenderingContext | WebGL2RenderingContext | null,
   container: null as HTMLDivElement | null,
   mountStack: [] as Array<{
     parent: ParentNode | null;
@@ -23,11 +24,17 @@ export const Live2DStage = {
   loadingOverlay: null as HTMLDivElement | null,
   loadingText: null as HTMLDivElement | null,
   loadingBarFill: null as HTMLDivElement | null,
+  interactionLayer: null as HTMLDivElement | null,
   gestureRecognizer: null as GestureRecognizer | null,
   _dragClass: 'desktop-pet-dragging',
   _minVisiblePx: 48,
+  _interactionPaddingPx: 14,
+  _alphaHitThreshold: 10,
+  _maxPixelScanSamples: 360000,
   _onPositionChange: null as ((x: number, y: number) => void) | null,
   _boundWindowResize: null as (() => void) | null,
+  _interactionSyncTimer: null as number | null,
+  _pixelReadBuffer: null as Uint8Array | null,
 
   _clampPosition(
     x: number,
@@ -60,7 +67,7 @@ export const Live2DStage = {
     if (!this.container) return false;
     if (this.mountMode === 'preview') return false;
 
-    // 默认位置使用 right/bottom 固定，无需在 resize 时写入 left/top（避免把默认位置持久化成数值）
+    // 榛樿浣嶇疆浣跨敤 right/bottom 鍥哄畾锛屾棤闇€鍦?resize 鏃跺啓鍏?left/top锛堥伩鍏嶆妸榛樿浣嶇疆鎸佷箙鍖栨垚鏁板€硷級
     const hasCustom = this.container.style.right === 'auto' || this.container.style.bottom === 'auto';
     const hasExplicitLeftTop = !!this.container.style.left || !!this.container.style.top;
     return hasCustom || hasExplicitLeftTop;
@@ -95,7 +102,7 @@ export const Live2DStage = {
     this.container.style.right = 'auto';
     this.container.style.bottom = 'auto';
 
-    log(`窗口变化导致位置越界，已自动修正(${reason})`, {
+    log(`绐楀彛鍙樺寲瀵艰嚧浣嶇疆瓒婄晫锛屽凡鑷姩淇(${reason})`, {
       from: { x: rect.left, y: rect.top },
       to: { x: clamped.x, y: clamped.y },
     });
@@ -114,7 +121,7 @@ export const Live2DStage = {
     try {
       top.addEventListener('resize', this._boundWindowResize, { passive: true });
     } catch (e) {
-      warn('绑定窗口 resize 监听失败', e);
+      warn('缁戝畾绐楀彛 resize 鐩戝惉澶辫触', e);
       this._boundWindowResize = null;
     }
   },
@@ -131,15 +138,191 @@ export const Live2DStage = {
     }
   },
 
-  /** 获取父窗口 */
+  /** 鑾峰彇鐖剁獥鍙?*/
   _top(): Window {
     return window.parent ?? window;
   },
 
-  /** 获取 PIXI */
+  /** 鑾峰彇 PIXI */
   _getPIXI(): any {
     const top = this._top();
     return Live2DLoader.getPixi(top);
+  },
+
+  _measureOpaqueBoundsFromCanvas(
+    containerWidth: number,
+    containerHeight: number,
+  ): { left: number; top: number; width: number; height: number } | null {
+    const gl = this.glContext;
+    if (!gl) return null;
+
+    const bufferWidth = gl.drawingBufferWidth;
+    const bufferHeight = gl.drawingBufferHeight;
+    if (bufferWidth <= 0 || bufferHeight <= 0) return null;
+
+    const byteLength = bufferWidth * bufferHeight * 4;
+    if (!this._pixelReadBuffer || this._pixelReadBuffer.length !== byteLength) {
+      this._pixelReadBuffer = new Uint8Array(byteLength);
+    }
+    const pixels = this._pixelReadBuffer;
+
+    try {
+      gl.readPixels(0, 0, bufferWidth, bufferHeight, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    } catch {
+      return null;
+    }
+
+    const scanStep = Math.max(1, Math.floor(Math.sqrt((bufferWidth * bufferHeight) / this._maxPixelScanSamples)));
+    const alphaThreshold = Math.max(0, Math.min(255, this._alphaHitThreshold));
+
+    let minX = bufferWidth;
+    let minY = bufferHeight;
+    let maxX = -1;
+    let maxY = -1;
+
+    for (let y = 0; y < bufferHeight; y += scanStep) {
+      const rowOffset = y * bufferWidth * 4;
+      for (let x = 0; x < bufferWidth; x += scanStep) {
+        const alpha = pixels[rowOffset + x * 4 + 3];
+        if (alpha <= alphaThreshold) continue;
+
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+
+    if (maxX < 0 || maxY < 0) return null;
+
+    if (scanStep > 1) {
+      maxX = Math.min(bufferWidth - 1, maxX + scanStep);
+      maxY = Math.min(bufferHeight - 1, maxY + scanStep);
+    }
+
+    const scaleX = containerWidth / bufferWidth;
+    const scaleY = containerHeight / bufferHeight;
+    const left = Math.max(0, Math.floor(minX * scaleX));
+    const right = Math.min(Math.ceil(containerWidth), Math.ceil((maxX + 1) * scaleX));
+    const top = Math.max(0, Math.floor(containerHeight - (maxY + 1) * scaleY));
+    const bottom = Math.min(Math.ceil(containerHeight), Math.ceil(containerHeight - minY * scaleY));
+    const width = right - left;
+    const height = bottom - top;
+    if (width < 8 || height < 8) return null;
+
+    return { left, top, width, height };
+  },
+
+  _syncInteractionLayerBounds(): void {
+    if (!this.container || !this.interactionLayer) return;
+
+    const layer = this.interactionLayer;
+    const container = this.container;
+    const disableLayer = () => {
+      layer.style.left = '0px';
+      layer.style.top = '0px';
+      layer.style.width = '100%';
+      layer.style.height = '100%';
+      layer.style.pointerEvents = 'none';
+      layer.style.cursor = 'default';
+    };
+
+    if (this.mountMode === 'preview') {
+      disableLayer();
+      return;
+    }
+
+    const rect = container.getBoundingClientRect();
+    const containerWidth =
+      rect.width > 0 ? rect.width : Number.parseFloat(String(container.style.width || '').replace('px', ''));
+    const containerHeight =
+      rect.height > 0 ? rect.height : Number.parseFloat(String(container.style.height || '').replace('px', ''));
+
+    if (!Number.isFinite(containerWidth) || !Number.isFinite(containerHeight) || containerWidth <= 0 || containerHeight <= 0) {
+      return;
+    }
+
+    const applyBounds = (left: number, top: number, width: number, height: number): boolean => {
+      const padding = Math.max(0, this._interactionPaddingPx);
+      const x1 = Math.max(0, Math.floor(left - padding));
+      const y1 = Math.max(0, Math.floor(top - padding));
+      const x2 = Math.min(Math.ceil(containerWidth), Math.ceil(left + width + padding));
+      const y2 = Math.min(Math.ceil(containerHeight), Math.ceil(top + height + padding));
+      const w = x2 - x1;
+      const h = y2 - y1;
+      if (w < 16 || h < 16) return false;
+
+      layer.style.left = `${x1}px`;
+      layer.style.top = `${y1}px`;
+      layer.style.width = `${w}px`;
+      layer.style.height = `${h}px`;
+      layer.style.pointerEvents = 'auto';
+      layer.style.cursor = 'pointer';
+      return true;
+    };
+
+    const model = this.app?.stage?.children?.[0] as any;
+    if (!model) {
+      disableLayer();
+      return;
+    }
+
+    const alphaBounds = this._measureOpaqueBoundsFromCanvas(containerWidth, containerHeight);
+    if (alphaBounds) {
+      const suspiciouslyHuge =
+        alphaBounds.width >= containerWidth * 0.95 && alphaBounds.height >= containerHeight * 0.95;
+      if (!suspiciouslyHuge && applyBounds(alphaBounds.left, alphaBounds.top, alphaBounds.width, alphaBounds.height)) {
+        return;
+      }
+    }
+
+    if (typeof model.getBounds === 'function') {
+      try {
+        const bounds = model.getBounds();
+        const x = Number(bounds?.x);
+        const y = Number(bounds?.y);
+        const width = Number(bounds?.width);
+        const height = Number(bounds?.height);
+        const isValid =
+          Number.isFinite(x) &&
+          Number.isFinite(y) &&
+          Number.isFinite(width) &&
+          Number.isFinite(height) &&
+          width > 0 &&
+          height > 0;
+        if (isValid) {
+          const suspiciouslyHuge = width >= containerWidth * 0.95 && height >= containerHeight * 0.95;
+          if (!suspiciouslyHuge && applyBounds(x, y, width, height)) {
+            return;
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    const fallbackWidth = Math.max(80, Math.round(containerWidth * 0.62));
+    const fallbackHeight = Math.max(120, Math.round(containerHeight * 0.88));
+    const fallbackLeft = Math.max(0, Math.round((containerWidth - fallbackWidth) / 2));
+    const fallbackTop = Math.max(0, Math.round(containerHeight - fallbackHeight));
+    if (!applyBounds(fallbackLeft, fallbackTop, fallbackWidth, fallbackHeight)) {
+      disableLayer();
+      return;
+    }
+  },
+
+  _startInteractionSyncTimer(): void {
+    this._stopInteractionSyncTimer();
+    this._syncInteractionLayerBounds();
+    this._interactionSyncTimer = window.setInterval(() => {
+      this._syncInteractionLayerBounds();
+    }, 250);
+  },
+
+  _stopInteractionSyncTimer(): void {
+    if (this._interactionSyncTimer === null) return;
+    window.clearInterval(this._interactionSyncTimer);
+    this._interactionSyncTimer = null;
   },
 
   _enablePointerDrag(
@@ -154,6 +337,7 @@ export const Live2DStage = {
 
     const top = this._top();
     const container = this.container;
+    const dragTarget = this.interactionLayer ?? container;
     const onPositionChange = options.onPositionChange;
 
     const state = {
@@ -184,7 +368,7 @@ export const Live2DStage = {
       $container.removeClass(this._dragClass);
     };
 
-    container.addEventListener('pointerdown', (e: PointerEvent) => {
+    dragTarget.addEventListener('pointerdown', (e: PointerEvent) => {
       if (e.button !== 0) return;
       if (state.pointerId !== null) return;
 
@@ -197,13 +381,13 @@ export const Live2DStage = {
       state.startTop = top;
 
       try {
-        container.setPointerCapture(e.pointerId);
+        dragTarget.setPointerCapture(e.pointerId);
       } catch {
         // ignore
       }
     });
 
-    container.addEventListener('pointermove', (e: PointerEvent) => {
+    dragTarget.addEventListener('pointermove', (e: PointerEvent) => {
       if (state.pointerId === null || e.pointerId !== state.pointerId) return;
 
       const dx = e.clientX - state.startClientX;
@@ -258,12 +442,12 @@ export const Live2DStage = {
       this._onPositionChange?.(clamped.x, clamped.y);
 
       try {
-        container.releasePointerCapture(e.pointerId);
+        dragTarget.releasePointerCapture(e.pointerId);
       } catch {
         // ignore
       }
 
-      // iOS 在 pointerup 后可能出现粘滞点击，这里延迟清除 selection
+      // iOS 鍦?pointerup 鍚庡彲鑳藉嚭鐜扮矘婊炵偣鍑伙紝杩欓噷寤惰繜娓呴櫎 selection
       try {
         top.getSelection?.()?.removeAllRanges?.();
       } catch {
@@ -271,8 +455,8 @@ export const Live2DStage = {
       }
     };
 
-    container.addEventListener('pointerup', onPointerUp);
-    container.addEventListener('pointercancel', onPointerUp);
+    dragTarget.addEventListener('pointerup', onPointerUp);
+    dragTarget.addEventListener('pointercancel', onPointerUp);
   },
 
   _ensureLoadingOverlay(): boolean {
@@ -305,7 +489,7 @@ export const Live2DStage = {
 
     const text = doc.createElement('div');
     text.style.cssText = 'margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;';
-    text.textContent = '正在加载模型 (0%)';
+    text.textContent = '姝ｅ湪鍔犺浇妯″瀷 (0%)';
 
     const track = doc.createElement('div');
     track.style.cssText = 'width: 100%; height: 6px; border-radius: 999px; background: rgba(148, 163, 184, 0.35); overflow: hidden;';
@@ -341,7 +525,7 @@ export const Live2DStage = {
       try {
         this.loadingOverlay.remove();
       } catch (e) {
-        warn('加载进度条移除失败', e);
+        warn('Failed to remove loading progress overlay', e);
       }
     }
     this.loadingOverlay = null;
@@ -350,7 +534,7 @@ export const Live2DStage = {
   },
 
   /**
-   * 创建渲染容器和 PIXI Application
+   * 鍒涘缓娓叉煋瀹瑰櫒鍜?PIXI Application
    */
   create(options: {
     width: number;
@@ -366,18 +550,18 @@ export const Live2DStage = {
     const top = this._top();
     const PIXI = this._getPIXI();
     if (!PIXI) {
-      warn('PIXI 未就绪，无法创建舞台');
+      warn('PIXI 鏈氨缁紝鏃犳硶鍒涘缓鑸炲彴');
       return false;
     }
 
-    // 防止脚本热重载或重复初始化时残留多个舞台
+    // 闃叉鑴氭湰鐑噸杞芥垨閲嶅鍒濆鍖栨椂娈嬬暀澶氫釜鑸炲彴
     this.destroy();
     this._onPositionChange = options.onPositionChange ?? null;
     this._bindWindowResize({ width: options.width, height: options.height });
     const stale = top.document.getElementById('desktop-pet-stage');
     if (stale) stale.remove();
 
-    // 创建容器 div
+    // 鍒涘缓瀹瑰櫒 div
     this.container = top.document.createElement('div');
     this.container.id = 'desktop-pet-stage';
     this.container.style.cssText = `
@@ -388,12 +572,12 @@ export const Live2DStage = {
       height: ${options.height}px;
       overflow: hidden;
       z-index: 10000;
-      pointer-events: auto;
-      cursor: pointer;
+      pointer-events: none;
+      cursor: default;
       touch-action: none;
     `;
 
-    // 应用保存的位置
+    // Apply persisted position.
     const hasSavedPosition =
       Number.isFinite(options.position.x) &&
       Number.isFinite(options.position.y) &&
@@ -414,7 +598,7 @@ export const Live2DStage = {
       this.container.style.bottom = 'auto';
 
       if (clamped.clamped) {
-        log('检测到宠物位置超出可视区域，已自动修正', {
+        log('妫€娴嬪埌瀹犵墿浣嶇疆瓒呭嚭鍙鍖哄煙锛屽凡鑷姩淇', {
           from: options.position,
           to: { x: clamped.x, y: clamped.y },
         });
@@ -424,12 +608,27 @@ export const Live2DStage = {
 
     top.document.body.appendChild(this.container);
 
-    // 创建 canvas
+    // 鍒涘缓 canvas
     this.canvas = top.document.createElement('canvas');
-    this.canvas.style.cssText = 'width: 100%; height: 100%;';
+    this.canvas.style.cssText = 'width: 100%; height: 100%; pointer-events: none;';
     this.container.appendChild(this.canvas);
 
-    // 创建 PIXI Application
+    this.interactionLayer = top.document.createElement('div');
+    this.interactionLayer.className = 'desktop-pet-interaction-layer';
+    this.interactionLayer.style.cssText = `
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: auto;
+      cursor: pointer;
+      touch-action: none;
+      z-index: 4;
+    `;
+    this.container.appendChild(this.interactionLayer);
+
+    // 鍒涘缓 PIXI Application
     const dpr = top.devicePixelRatio || 1;
     this.canvas.width = Math.floor(options.width * dpr);
     this.canvas.height = Math.floor(options.height * dpr);
@@ -453,14 +652,16 @@ export const Live2DStage = {
       });
 
     if (!glContext) {
-      warn('WebGL 不可用');
+      warn('WebGL is unavailable');
       return false;
     }
+    this.glContext = glContext as WebGLRenderingContext | WebGL2RenderingContext;
+    this._pixelReadBuffer = null;
 
     try {
       const attrs = (glContext as WebGLRenderingContext | WebGL2RenderingContext).getContextAttributes?.();
       if (attrs && attrs.stencil === false) {
-        warn('当前 WebGL 上下文未提供 stencil buffer，部分遮罩可能异常');
+        warn('Current WebGL context has no stencil buffer; mask rendering may be abnormal');
       }
     } catch {
       // ignore
@@ -478,12 +679,13 @@ export const Live2DStage = {
       antialias: true,
     });
 
-    // 使用 jQueryUI 实现拖拽
+    // 浣跨敤 jQueryUI 瀹炵幇鎷栨嫿
     const $container = $(this.container);
     const draggable = ($container as any).draggable;
     if (typeof draggable === 'function') {
       try {
         $container.draggable({
+          handle: '.desktop-pet-interaction-layer',
           start: (_e: any, ui: any) => {
             $container.addClass(this._dragClass);
 
@@ -533,7 +735,7 @@ export const Live2DStage = {
           },
         });
       } catch (e) {
-        warn('jQueryUI draggable 初始化失败，已回退为原生拖拽', e);
+        warn('Failed to initialize jQueryUI draggable, fallback to native pointer drag', e);
         this._enablePointerDrag($container, {
           width: options.width,
           height: options.height,
@@ -541,7 +743,7 @@ export const Live2DStage = {
         });
       }
     } else {
-      warn('未检测到 jQueryUI draggable，已回退为原生拖拽');
+      warn('jQueryUI draggable not found, fallback to native pointer drag');
       this._enablePointerDrag($container, {
         width: options.width,
         height: options.height,
@@ -549,8 +751,9 @@ export const Live2DStage = {
       });
     }
 
-    // 鼠标滚轮缩放
-    this.container.addEventListener('wheel', (e: WheelEvent) => {
+    // 榧犳爣婊氳疆缂╂斁
+    const interactionTarget = this.interactionLayer ?? this.container;
+    interactionTarget.addEventListener('wheel', (e: WheelEvent) => {
       e.preventDefault();
       const delta = e.deltaY > 0 ? -0.05 : 0.05;
       const newScale = Math.max(0.1, Math.min(3, options.scale + delta));
@@ -558,9 +761,9 @@ export const Live2DStage = {
       options.onScaleChange?.(newScale);
     }, { passive: false });
 
-    // 手势识别（替代原来的 click 事件）
+    // Gesture recognizer (replaces raw click handler).
     this.gestureRecognizer = new GestureRecognizer(
-      this.container,
+      interactionTarget,
       {},
       (event: GestureEvent) => {
         switch (event.type) {
@@ -577,20 +780,21 @@ export const Live2DStage = {
       },
       () => $container.hasClass('ui-draggable-dragging') || $container.hasClass(this._dragClass),
     );
+    this._startInteractionSyncTimer();
 
-    log('Live2D 舞台创建完成');
+    log('Live2D 鑸炲彴鍒涘缓瀹屾垚');
     return true;
   },
 
   /**
-   * 获取 PIXI Application 的 stage
+   * 鑾峰彇 PIXI Application 鐨?stage
    */
   getStage(): any {
     return this.app?.stage;
   },
 
   /**
-   * 当前是否处于“预览挂载”状态（画布被挂到设置面板等容器内）
+   * 褰撳墠鏄惁澶勪簬鈥滈瑙堟寕杞解€濈姸鎬侊紙鐢诲竷琚寕鍒拌缃潰鏉跨瓑瀹瑰櫒鍐咃級
    */
   isPreviewMounted(): boolean {
     return this.mountMode === 'preview';
@@ -630,7 +834,7 @@ export const Live2DStage = {
       // ignore
     }
 
-    // 预览态不应写入位置持久化
+    // 棰勮鎬佷笉搴斿啓鍏ヤ綅缃寔涔呭寲
     this._onPositionChange = null;
     this._unbindWindowResize();
 
@@ -652,6 +856,14 @@ export const Live2DStage = {
       cursor: default;
       touch-action: none;
     `;
+    if (this.interactionLayer) {
+      this.interactionLayer.style.left = '0px';
+      this.interactionLayer.style.top = '0px';
+      this.interactionLayer.style.width = '100%';
+      this.interactionLayer.style.height = '100%';
+      this.interactionLayer.style.pointerEvents = 'none';
+      this.interactionLayer.style.cursor = 'default';
+    }
 
     try {
       const $container = $(this.container);
@@ -689,6 +901,7 @@ export const Live2DStage = {
     this.container.style.cssText = entry.styleText;
     this._onPositionChange = entry.onPositionChange;
     this.mountMode = this.mountStack.length > 0 ? 'preview' : 'floating';
+    this._syncInteractionLayerBounds();
 
     try {
       const $container = $(this.container);
@@ -700,7 +913,7 @@ export const Live2DStage = {
       // ignore
     }
 
-    // 恢复窗口 resize clamp
+    // 鎭㈠绐楀彛 resize clamp
     this._bindWindowResize({ width: entry.width, height: entry.height });
 
     const restore = this._pendingFloatingResize ?? { width: entry.width, height: entry.height };
@@ -711,8 +924,7 @@ export const Live2DStage = {
   },
 
   /**
-   * 调整容器大小（浮窗模式）。若当前处于预览挂载，则延后到 popMount 后再应用。
-   */
+   * 璋冩暣瀹瑰櫒澶у皬锛堟诞绐楁ā寮忥級銆傝嫢褰撳墠澶勪簬棰勮鎸傝浇锛屽垯寤跺悗鍒?popMount 鍚庡啀搴旂敤銆?   */
   resizeFloating(width: number, height: number): void {
     if (this.mountMode === 'preview') {
       this._pendingFloatingResize = { width, height };
@@ -723,42 +935,42 @@ export const Live2DStage = {
       this.container.style.width = `${width}px`;
       this.container.style.height = `${height}px`;
       this._clampContainerToViewport({ width, height }, 'stage-resize');
+      this._syncInteractionLayerBounds();
     }
     if (this.app) {
       try {
         this.app.renderer.resize(width, height);
       } catch (e) {
-        warn('renderer.resize 失败', e);
+        warn('renderer.resize 澶辫触', e);
       }
     }
   },
 
   /**
-   * 调整画布大小（预览模式，不改写容器的 width/height 样式）
-   */
+   * 璋冩暣鐢诲竷澶у皬锛堥瑙堟ā寮忥紝涓嶆敼鍐欏鍣ㄧ殑 width/height 鏍峰紡锛?   */
   resizePreview(width: number, height: number): void {
     if (this.mountMode !== 'preview') return;
     if (!this.app) return;
     try {
       this.app.renderer.resize(width, height);
+      this._syncInteractionLayerBounds();
     } catch (e) {
-      warn('renderer.resize 失败', e);
+      warn('renderer.resize 澶辫触', e);
     }
   },
 
   /**
-   * 调整容器大小（兼容旧调用：等价于 resizeFloating）
-   */
+   * 璋冩暣瀹瑰櫒澶у皬锛堝吋瀹规棫璋冪敤锛氱瓑浠蜂簬 resizeFloating锛?   */
   resize(width: number, height: number): void {
     this.resizeFloating(width, height);
   },
 
   /**
-   * 销毁舞台
-   */
+   * 閿€姣佽垶鍙?   */
   destroy(): void {
     this.hideLoadingProgress();
     this._unbindWindowResize();
+    this._stopInteractionSyncTimer();
     this.mountStack = [];
     this.mountMode = 'floating';
     this._pendingFloatingResize = null;
@@ -772,7 +984,7 @@ export const Live2DStage = {
       try {
         this.app.destroy(true);
       } catch (e) {
-        warn('PIXI Application 销毁失败', e);
+        warn('Failed to destroy PIXI Application', e);
       }
       this.app = null;
     }
@@ -780,10 +992,14 @@ export const Live2DStage = {
       try {
         this.container.remove();
       } catch (e) {
-        warn('舞台容器移除失败', e);
+        warn('鑸炲彴瀹瑰櫒绉婚櫎澶辫触', e);
       }
       this.container = null;
     }
+    this.interactionLayer = null;
     this.canvas = null;
+    this.glContext = null;
+    this._pixelReadBuffer = null;
   },
 };
+

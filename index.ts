@@ -7,7 +7,7 @@ import { error as logError, log, warn } from './utils/dom';
 import { SCRIPT_NAME } from './core/constants';
 import { useUiStore } from './core/ui';
 
-const BUILD_TAG = '20260214.10';
+const BUILD_TAG = '20260215.01';
 const SETTINGS_LABEL = '桌面宠物设置';
 const OPEN_SETTINGS_FN_KEY = '__desktopPetOpenSettings_v2';
 

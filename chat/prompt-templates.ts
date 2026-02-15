@@ -84,7 +84,7 @@ function appendEmotionCotFormat(responseFormat: string): string {
 
 function buildContextLines(chatContext: Array<{ role: string; name: string; message: string }>): string {
   return chatContext
-    .map((msg) => `${msg.name}(${msg.role}): ${msg.message.slice(0, 200)}`)
+    .map((msg) => `${msg.name}(${msg.role}): ${String(msg.message ?? '')}`)
     .join('\n');
 }
 
@@ -124,7 +124,7 @@ export function buildChatPrompt(
   const finalFormat = emotionCotEnabled ? appendEmotionCotFormat(responseFormat) : responseFormat;
 
   const contextLines = buildContextLines(chatContext);
-  const safeUserMessage = String(userMessage || '').trim().slice(0, 2000);
+  const safeUserMessage = String(userMessage || '').trim();
 
   const system = `${systemPrompt}\n\n回复格式要求：${finalFormat}\n\n你现在需要以桌面宠物的身份与用户聊天。`;
 

@@ -3,34 +3,23 @@ import { error, log, warn } from '../utils/dom';
 import { ChatMonitor } from './monitor';
 import { buildChatPrompt, buildPrompt } from './prompt-templates';
 
-/** 吐槽结果回调 */
 type CommentCallback = (text: string, isDone: boolean) => void;
 
 /**
  * 吐槽生成器
- * 调用 LLM 生成吐槽评论
+ * 调用 LLM 生成吐槽/聊天文案，并通过回调把流式结果传给 UI。
  */
 export const Commentator = {
-  /** 是否正在生成 */
   isGenerating: false,
 
-  /** 结果回调 */
   _onComment: null as CommentCallback | null,
-
-  /** 流式监听停止句柄 */
   _streamStop: null as { stop: () => void } | null,
   _latestStreamText: '',
 
-  /**
-   * 设置评论结果回调
-   */
   setCallback(cb: CommentCallback): void {
     this._onComment = cb;
   },
 
-  /**
-   * 触发吐槽生成
-   */
   async generate(): Promise<void> {
     if (this.isGenerating) {
       log('已有生成任务进行中，跳过');
@@ -39,44 +28,51 @@ export const Commentator = {
 
     this.isGenerating = true;
     log('开始生成吐槽');
+    let emittedDone = false;
 
     try {
+      this._onComment?.('', false);
+
       const store = useSettingsStore();
       const s = store.settings;
 
-      // 获取最近聊天记录
       const chatMessages = this._getChatContext(s.maxChatContext);
       if (chatMessages.length === 0) {
         log('没有可用的聊天记录，跳过吐槽');
         return;
       }
 
-      // 构建提示词
       const { system, user } = buildPrompt(s.commentStyle, s.customPrompt, chatMessages, !!s.emotionCotEnabled);
 
       this._latestStreamText = '';
-
       let result: string;
 
       if (s.apiMode === 'custom' && s.apiConfig.url) {
-        // 自定义 API 模式
         result = await this._generateCustom(system, user, s.apiConfig);
       } else {
-        // 标记自身生成，防止 GENERATION_ENDED 误触发
         ChatMonitor.markSelfGeneration();
-        // 酒馆主 API 模式
-        result = await this._generateTavern(system, user, s.apiConfig.max_tokens, s.apiConfig.temperature);
+        result = await this._generateTavern(
+          system,
+          user,
+          s.apiConfig.max_tokens,
+          s.apiConfig.temperature,
+          !!s.apiConfig.sendWorldInfo,
+        );
       }
 
       const finalText = String(result || '').trim() || String(this._latestStreamText || '').trim();
       if (finalText) {
         this._onComment?.(finalText, true);
+        emittedDone = true;
       } else {
         warn('吐槽生成结果为空');
       }
     } catch (e) {
       error('吐槽生成失败:', e);
     } finally {
+      if (!emittedDone) {
+        this._onComment?.('', true);
+      }
       this.isGenerating = false;
     }
   },
@@ -84,7 +80,7 @@ export const Commentator = {
   /**
    * 手动聊天（从功能菜单输入框触发）
    * - 会读取最近聊天上下文作为参考（与吐槽一致）
-   * - 使用同一套 API 配置（酒馆主 API / 自定义 API）
+   * - 使用相同 API 配置（酒馆主 API / 自定义 API）
    */
   async chat(userMessage: string): Promise<void> {
     const input = String(userMessage || '').trim();
@@ -97,8 +93,11 @@ export const Commentator = {
 
     this.isGenerating = true;
     log('开始手动聊天生成');
+    let emittedDone = false;
 
     try {
+      this._onComment?.('', false);
+
       const store = useSettingsStore();
       const s = store.settings;
 
@@ -112,48 +111,60 @@ export const Commentator = {
       );
 
       this._latestStreamText = '';
-
       let result: string;
+
       if (s.apiMode === 'custom' && s.apiConfig.url) {
         result = await this._generateCustom(system, user, s.apiConfig);
       } else {
-        // 标记自身生成，防止 GENERATION_ENDED 误触发
         ChatMonitor.markSelfGeneration();
-        result = await this._generateTavern(system, user, s.apiConfig.max_tokens, s.apiConfig.temperature);
+        result = await this._generateTavern(
+          system,
+          user,
+          s.apiConfig.max_tokens,
+          s.apiConfig.temperature,
+          !!s.apiConfig.sendWorldInfo,
+        );
       }
 
       const finalText = String(result || '').trim() || String(this._latestStreamText || '').trim();
       if (finalText) {
         this._onComment?.(finalText, true);
+        emittedDone = true;
       } else {
         warn('手动聊天生成结果为空');
       }
     } catch (e) {
       error('聊天生成失败:', e);
     } finally {
+      if (!emittedDone) {
+        this._onComment?.('', true);
+      }
       this.isGenerating = false;
     }
   },
 
-  /**
-   * 使用酒馆主 API (generateRaw) 生成
-   */
   async _generateTavern(
     system: string,
     user: string,
     maxTokens: number,
     temperature: number,
+    sendWorldInfo: boolean,
   ): Promise<string> {
-    // 设置流式监听
     this._setupStreamListener();
+    const orderedPrompts: Array<
+      'world_info_before' | 'world_info_after' | { role: 'system' | 'assistant' | 'user'; content: string }
+    > = sendWorldInfo
+      ? ['world_info_before', { role: 'system', content: system }, 'world_info_after', { role: 'user', content: user }]
+      : [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ];
+
     try {
       return await generateRaw({
         should_silence: true,
         should_stream: true,
-        ordered_prompts: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
+        ordered_prompts: orderedPrompts,
         custom_api: undefined,
       });
     } finally {
@@ -161,9 +172,6 @@ export const Commentator = {
     }
   },
 
-  /**
-   * 使用自定义 API 生成
-   */
   async _generateCustom(
     system: string,
     user: string,
@@ -179,6 +187,7 @@ export const Commentator = {
       top_p: number;
       top_k: number;
       usePresetSampling: boolean;
+      sendWorldInfo?: boolean;
     },
   ): Promise<string> {
     const apiUrl = String(apiConfig.url || '').trim();
@@ -195,6 +204,7 @@ export const Commentator = {
     }
 
     const usePreset = !!apiConfig.usePresetSampling;
+    const sendWorldInfo = !!apiConfig.sendWorldInfo;
     const requestUrl = '/api/backends/chat-completions/generate';
     const orderedPrompts = [
       { role: 'system', content: system },
@@ -207,13 +217,13 @@ export const Commentator = {
         model,
         stream: false,
         chat_completion_source: 'custom',
-        custom_prompt_post_processing: 'strict',
+        custom_prompt_post_processing: sendWorldInfo ? 'strict' : 'none',
         reverse_proxy: apiUrl,
         custom_url: apiUrl,
         custom_include_headers: apiKey ? `Authorization: Bearer ${apiKey}` : '',
       };
 
-      // 按数据库插件做法进行分级回退，尽量兼容不同 OpenAI 兼容后端。
+      // 分级回退请求参数，尽量兼容不同 OpenAI 兼容后端。
       if (!usePreset && attempt !== 'minimal') {
         body.max_tokens = apiConfig.max_tokens;
         body.temperature = apiConfig.temperature;
@@ -278,16 +288,13 @@ export const Commentator = {
         const is422 = status === 422 || /\b422\b/.test(msg);
         const canRetry = is422 && i < attempts.length - 1;
         if (!canRetry) throw e;
-        warn(`自定义 API 返回 422，准备继续回退参数（${attempt} -> ${attempts[i + 1]}）`);
+        warn(`自定义 API 返回 422，准备继续回退参数：${attempt} -> ${attempts[i + 1]}`);
       }
     }
 
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
   },
 
-  /**
-   * 设置流式传输监听器
-   */
   _setupStreamListener(): void {
     this._cleanupStreamListener();
     this._streamStop = eventOn(
@@ -299,9 +306,6 @@ export const Commentator = {
     );
   },
 
-  /**
-   * 清理流式传输监听器
-   */
   _cleanupStreamListener(): void {
     if (this._streamStop) {
       this._streamStop.stop();
@@ -309,9 +313,6 @@ export const Commentator = {
     }
   },
 
-  /**
-   * 获取聊天上下文
-   */
   _getChatContext(maxCount: number): Array<{ role: string; name: string; message: string }> {
     try {
       const messages = getChatMessages(`0-{{lastMessageId}}`, {
@@ -319,8 +320,9 @@ export const Commentator = {
         hide_state: 'unhidden',
       });
 
-      // 取最后 N 条
-      const recent = messages.slice(-maxCount);
+      const list = Array.isArray(messages) ? messages : [];
+      const safeMaxCount = Number.isFinite(maxCount) && maxCount > 0 ? Math.floor(maxCount) : 20;
+      const recent = list.slice(-safeMaxCount);
 
       return recent.map((msg) => ({
         role: msg.role,
@@ -333,9 +335,6 @@ export const Commentator = {
     }
   },
 
-  /**
-   * 清理
-   */
   destroy(): void {
     this._cleanupStreamListener();
     this._onComment = null;

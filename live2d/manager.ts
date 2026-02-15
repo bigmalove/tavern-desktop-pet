@@ -20,7 +20,8 @@ export type ModelLoadProgress = {
 };
 
 /**
- * Live2D 妯″瀷绠＄悊鍣? * 璐熻矗妯″瀷鍔犺浇銆佽〃鎯?鍔ㄤ綔绠＄悊
+ * Live2D 模型管理器
+ * 负责模型加载、表情/动作管理。
  */
 export const Live2DManager = {
   _JSDELIVR_HOSTS: [
@@ -56,12 +57,12 @@ export const Live2DManager = {
   _manualMouthParamIds: [] as string[],
   _manualMouthParamIdSet: new Set<string>(),
 
-  /** 鑾峰彇鐖剁獥鍙?*/
+  /** 获取父窗口 */
   _top(): Window {
     return window.parent ?? window;
   },
 
-  /** 鑾峰彇鐖剁獥鍙?PIXI */
+  /** 获取父窗口上的 PIXI 运行时 */
   _getPIXI(): any {
     const runtimePixi = Live2DLoader.getPixi(this._top());
     if (runtimePixi) return runtimePixi;
@@ -690,17 +691,17 @@ export const Live2DManager = {
   },
 
   /**
-   * 鑾峰彇 CORS 浠ｇ悊 URL锛堝弬鑰?galgame閫氱敤鐢熸垚鍣ㄥ疄鐜帮級
-   * 渚濇灏濊瘯: getCorsProxyUrl 鈫?enableCorsProxy 鈫?corsProxy.getProxyUrl 鈫?/proxy?url=
+   * 获取 CORS 代理 URL（兼容多种运行环境）
+   * 依次尝试: getCorsProxyUrl -> enableCorsProxy -> corsProxy.getProxyUrl -> /proxy?url=
    */
   _getProxiedUrl(originalUrl: string): string {
     const top = this._top() as any;
     const url = String(originalUrl || '').trim();
     if (!url) return url;
-    // 宸茬粡鏄唬鐞?URL
+    // 已经是代理 URL
     if (url.toLowerCase().includes('/proxy?url=')) return url;
 
-    // SillyTavern 鍐呯疆 CORS 浠ｇ悊鍑芥暟
+    // SillyTavern 内置 CORS 代理函数
     if (typeof top.getCorsProxyUrl === 'function') {
       try {
         const proxied = top.getCorsProxyUrl(url);
@@ -722,7 +723,7 @@ export const Live2DManager = {
       } catch (_e) { /* ignore */ }
     }
 
-    // 鏈€缁堝洖閫€
+    // 最终回退
     const origin = top.location?.origin;
     if (origin) {
       return `${origin}/proxy?url=${encodeURIComponent(url)}`;
@@ -732,7 +733,8 @@ export const Live2DManager = {
   },
 
   /**
-   * 鍒濆鍖栫鐞嗗櫒锛堝姞杞?SDK 骞舵敞鍐?Ticker锛?   */
+   * 初始化管理器（加载 SDK 并注册 Ticker）
+   */
   async init(): Promise<boolean> {
     if (this.isReady) {
       const runtime = Live2DLoader.getRuntime(this._top());
@@ -791,7 +793,8 @@ export const Live2DManager = {
   },
 
   /**
-   * 浠庤繙绋?URL 鍔犺浇妯″瀷锛堝弬鑰?galgame閫氱敤鐢熸垚鍣ㄧ殑 _buildRemoteModelDataUrl锛?   * 鏍稿績鎬濊矾: 鐢?fetch 鑾峰彇 model JSON 鈫?灏嗘墍鏈夌浉瀵硅矾寰勬敼鍐欎负浠ｇ悊鍚庣殑缁濆 URL 鈫?杞负 data URL 浼犵粰 Live2DModel.from
+   * 从远程 URL 加载模型。
+   * 核心流程：拉取 model JSON -> 重写相对资源路径 -> 生成 data URL -> 交给 Live2DModel.from。
    */
   async loadModel(
     modelPath: string,
@@ -827,7 +830,7 @@ export const Live2DManager = {
     }
 
     reportProgress(12, '解析模型地址');
-    // 鏋勫缓瀹屾暣 URL
+    // 构建完整 URL
     let modelUrl: string;
     if (modelPath.startsWith('http://') || modelPath.startsWith('https://')) {
       modelUrl = modelPath;
@@ -841,7 +844,7 @@ export const Live2DManager = {
       log('开始加载模型:', modelPath);
       reportProgress(18, '清理旧模型');
 
-      // 閿€姣佹棫妯″瀷
+      // 销毁旧模型
       this.destroyModel();
 
       const modelUrlCandidates = this._buildModelUrlCandidates(modelUrl);
@@ -983,7 +986,9 @@ export const Live2DManager = {
   },
 
   /**
-   * 鑾峰彇杩滅▼妯″瀷 JSON锛屽皢鎵€鏈夌浉瀵硅祫婧愯矾寰勬敼鍐欎负浠ｇ悊鍚庣殑缁濆 URL锛?   * 鐒跺悗杞负 data URL锛堝弬鑰?galgame閫氱敤鐢熸垚鍣ㄧ殑 _buildRemoteModelDataUrl锛?   */
+   * 获取远程 model JSON，并把所有相对资源路径转换为可访问的绝对 URL。
+   * 之后将 JSON 转为 data URL 返回。
+   */
   async _buildRemoteModelDataUrl(modelUrl: string, forceProxyResources = false): Promise<string> {
     const candidateUrls = this._buildModelJsonCandidates(modelUrl);
 
@@ -1028,7 +1033,7 @@ export const Live2DManager = {
     const modifiedModelJson = JSON.parse(JSON.stringify(modelJson));
     this._normalizeLegacyCubism2Settings(modifiedModelJson);
 
-    // 灏嗙浉瀵硅矾寰勮В鏋愪负缁濆 URL锛堜粎鍦ㄩ渶瑕佹椂璧颁唬鐞嗭級
+    // 将相对路径解析为绝对 URL（必要时套代理）
     const resolveUrl = (p: string): string => {
       if (typeof p !== 'string') return p;
       const raw = p.trim();
@@ -1046,7 +1051,7 @@ export const Live2DManager = {
       return abs;
     };
 
-    // 鏀瑰啓 Cubism 3/4 model3.json
+    // 改写 Cubism 3/4 model3.json
     if (modifiedModelJson?.FileReferences) {
       const refs = modifiedModelJson.FileReferences;
       for (const key of Object.keys(refs)) {
@@ -1080,7 +1085,7 @@ export const Live2DManager = {
         }
       }
     } else {
-      // 鏀瑰啓 Cubism 2.1 model.json
+      // 改写 Cubism 2.1 model.json
       if (typeof modifiedModelJson.model === 'string') {
         modifiedModelJson.model = resolveUrl(modifiedModelJson.model);
       } else if (typeof modifiedModelJson.Model === 'string') {
@@ -1128,14 +1133,14 @@ export const Live2DManager = {
     this._lastModelJson = modifiedModelJson;
     this._lastModelJsonSourceUrl = sourceModelUrl;
 
-    // 杞负 data URL
+    // 转为 data URL
     const modelJsonStr = JSON.stringify(modifiedModelJson);
     const modelJsonBase64 = btoa(unescape(encodeURIComponent(modelJsonStr)));
     return `data:application/json;base64,${modelJsonBase64}`;
   },
 
   /**
-   * 灏嗘ā鍨嬫寕杞藉埌 PIXI 鑸炲彴
+   * 将模型挂载到 PIXI 舞台
    */
   mountToStage(stageWidth: number, stageHeight: number, scale: number): void {
     if (!this.model) return;
@@ -1143,7 +1148,7 @@ export const Live2DManager = {
     const stage = Live2DStage.getStage();
     if (!stage) return;
 
-    // 娓呯┖鑸炲彴
+    // 清空舞台
     while (stage.children.length > 0) {
       stage.removeChildAt(0);
     }
@@ -1178,7 +1183,7 @@ export const Live2DManager = {
   },
 
   /**
-   * 鏇存柊妯″瀷缂╂斁
+   * 更新模型缩放
    */
   updateScale(stageWidth: number, stageHeight: number, scale: number): void {
     if (!this.model) return;
@@ -1186,7 +1191,8 @@ export const Live2DManager = {
   },
 
   /**
-   * 鑾峰彇妯″瀷鍘熷灏哄锛堟湭搴旂敤澶栭儴缂╂斁锛?   */
+   * 获取模型原始尺寸（未应用外部缩放）
+   */
   _getModelBaseSize(): { width: number; height: number } {
     if (this.modelBaseBounds) {
       return {
@@ -1215,7 +1221,8 @@ export const Live2DManager = {
   },
 
   /**
-   * 鑾峰彇鍙敤鐨勮〃鎯呭垪琛?   */
+   * 获取可用表情列表
+   */
   getExpressions(): string[] {
     if (!this.model) return [];
     try {
@@ -1236,7 +1243,7 @@ export const Live2DManager = {
   },
 
   /**
-   * 鑾峰彇鍙敤鐨勫姩浣滅粍鍒楄〃
+   * 获取可用动作组列表
    */
   getMotionGroups(): Record<string, number> {
     const groups: Record<string, number> = {};
@@ -1345,7 +1352,7 @@ export const Live2DManager = {
   },
 
   /**
-   * 鎾斁琛ㄦ儏
+   * 播放表情
    */
   playExpression(name?: string): void {
     if (!this.model) return;
@@ -1365,7 +1372,7 @@ export const Live2DManager = {
   },
 
   /**
-   * 鎾斁鍔ㄤ綔
+   * 播放动作
    */
   playMotion(group?: string, index?: number): void {
     if (!this.model) return;
@@ -1407,7 +1414,8 @@ export const Live2DManager = {
   },
 
   /**
-   * 鎾斁闅忔満琛ㄦ儏鍜屽姩浣?   */
+   * 播放随机表情和动作
+   */
   playRandomAnimation(): void {
     this.playExpression();
     this.playMotion();
@@ -1889,7 +1897,8 @@ export const Live2DManager = {
   },
 
   /**
-   * 閿€姣佹ā鍨?   */
+   * 销毁模型
+   */
   destroyModel(): void {
     this._clearAutoMotionLoop();
     this._lipSyncActive = false;
@@ -1942,7 +1951,7 @@ export const Live2DManager = {
   },
 
   /**
-   * 绛夊緟妯″瀷绾圭悊鍔犺浇瀹屾垚
+   * 等待模型纹理加载完成
    */
   async _waitForTextures(
     model: any,

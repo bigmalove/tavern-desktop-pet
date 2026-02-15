@@ -2,7 +2,7 @@ import { klona } from 'klona';
 import { defineStore } from 'pinia';
 import { ref, watchEffect } from 'vue';
 import { z } from 'zod';
-import { COMMENT_STYLES, DEFAULTS, EMOTION_TAGS } from './constants';
+import { COMMENT_STYLES, COMMENT_TRIGGER_MODES, DEFAULTS, EMOTION_TAGS } from './constants';
 import { normalizeEmotionConfigs } from './emotion';
 import { error as logError, warn } from '../utils/dom';
 
@@ -68,6 +68,7 @@ const SettingsSchema = z
         top_p: z.number().min(0).max(1).default(DEFAULTS.TOP_P),
         top_k: z.number().min(0).max(500).default(DEFAULTS.TOP_K),
         usePresetSampling: z.boolean().default(false),
+        sendWorldInfo: z.boolean().default(false),
       })
       .default({}),
 
@@ -85,6 +86,7 @@ const SettingsSchema = z
 
     // 吐槽配置
     commentStyle: z.enum(COMMENT_STYLES).default(DEFAULTS.COMMENT_STYLE),
+    commentTriggerMode: z.enum(COMMENT_TRIGGER_MODES).default(DEFAULTS.COMMENT_TRIGGER_MODE),
     customPrompt: z.string().default(''),
     autoTrigger: z.boolean().default(DEFAULTS.AUTO_TRIGGER),
     triggerInterval: z.number().min(1).max(100).default(DEFAULTS.TRIGGER_INTERVAL),

@@ -1,6 +1,6 @@
 <template>
   <div>
-    <ChatBubble :text="bubbleText" :isDone="bubbleDone" @hidden="onBubbleHidden" />
+    <ChatBubble :text="bubbleText" :is-done="bubbleDone" @hidden="onBubbleHidden" />
     <SettingsPanel
       :visible="showSettings"
       @close="uiStore.closeSettings()"
@@ -26,7 +26,7 @@
       <div class="browser-dialog">
         <div class="browser-dialog-header">
           <h3>在线模型库</h3>
-          <button class="close-btn" @click="showModelBrowser = false">✕</button>
+          <button class="close-btn" @click="showModelBrowser = false">×</button>
         </div>
         <div class="browser-dialog-body">
           <ModelBrowser
@@ -69,7 +69,7 @@ const uiStore = useUiStore();
 const { showSettings } = storeToRefs(uiStore);
 
 const bubbleText = ref('');
-const bubbleDone = ref(false);
+const bubbleDone = ref(true);
 const BASE_STAGE_WIDTH = 280;
 const BASE_STAGE_HEIGHT = 360;
 const OPEN_SETTINGS_FN_KEY = '__desktopPetOpenSettings_v2';
@@ -166,7 +166,6 @@ function unregisterGlobalOpenSettings(): void {
   }
 }
 
-// setup 阶段立刻注册，避免菜单点击时尚未就绪
 registerGlobalOpenSettings();
 
 function openFunctionMenu(e: GestureEvent): void {
@@ -236,8 +235,6 @@ function onModelBrowserLoad(url: string): void {
 }
 
 function onManualChat(message: string): void {
-  bubbleText.value = '';
-  bubbleDone.value = false;
   void Commentator.chat(message);
 }
 
@@ -384,13 +381,11 @@ function scheduleStatusCheck(reason: string): void {
   }, 2500);
 }
 
-/** 初始化 Live2D 和所有模块 */
 async function initPet() {
   try {
     log('桌面宠物初始化开始');
     const s = settings.value;
 
-    // 初始化 TTS / 口型同步（不依赖 Live2D 是否加载成功）
     try {
       setLipSyncRefs({
         getProxiedAudioUrl: (url: string) => TTSManager._getProxiedAudioUrl(url),
@@ -400,7 +395,6 @@ async function initPet() {
       logError('TTS 模块初始化失败（不影响模型显示）', e);
     }
 
-    // 注册设置按钮（无论 Live2D 是否加载成功都应可用）
     try {
       if (typeof appendInexistentScriptButtons === 'function') {
         appendInexistentScriptButtons([{ name: '桌面宠物设置', visible: true }]);
@@ -414,7 +408,6 @@ async function initPet() {
       notifyInitError('桌面宠物设置按钮注册失败（不影响模型显示）', e);
     }
 
-    // 设置吐槽回调
     Commentator.setCallback((text: string, isDone: boolean) => {
       const parsed = parseEmotionCotText(text, {
         enabled: !!settings.value.emotionCotEnabled,
@@ -456,9 +449,7 @@ async function initPet() {
         context = String(cfg?.ttsContext || '').trim();
       }
 
-      log(
-        `自动朗读: speaker=${speaker}, voice=${voiceName || '默认'}, context=${context || '无'}`,
-      );
+      log(`自动朗读: speaker=${speaker}, voice=${voiceName || '默认'}, context=${context || '无'}`);
 
       void (async () => {
         try {
@@ -483,18 +474,15 @@ async function initPet() {
       })();
     });
 
-    // 先初始化 Live2D SDK（加载 PIXI.js 等依赖）
     const ready = await Live2DManager.init();
     if (!ready) {
-      notifyInitError('Live2D SDK 初始化失败（可能是网络/CDN 不可用）');
+      notifyInitError('Live2D SDK 初始化失败（可能是网络 CDN 不可用）');
       return;
     }
     log('Live2D SDK 初始化完成');
 
-    // 同步动作循环开关（挂载模型前设置，避免 mount 后立即启动）
     Live2DManager.setAutoMotionLoopEnabled(s.autoMotionLoop);
 
-    // 创建 Live2D 舞台（尺寸随缩放同步变化）
     const stageSize = getStageSize(s.petScale);
 
     const created = Live2DStage.create({
@@ -509,18 +497,15 @@ async function initPet() {
         settings.value.petScale = scale;
       },
       onTap: (_e: GestureEvent) => {
-        // 单击：仅播放随机动画，不触发 LLM
-        log('单击宠物 → 播放动画（不触发 LLM）');
+        log('单击宠物 -> 播放动作（不触发 LLM）');
         Live2DManager.playRandomAnimation();
       },
       onDoubleTap: (_e: GestureEvent) => {
-        // 双击：触发 LLM 吐槽
-        log('双击宠物 → 触发吐槽');
+        log('双击宠物 -> 触发吐槽');
         ChatMonitor.manualTrigger();
       },
       onLongPress: (_e: GestureEvent) => {
-        // 长按：打开功能菜单（手动聊天 / 动作循环 / 切换模型 / 切换人设）
-        log('长按宠物 → 打开功能菜单');
+        log('长按宠物 -> 打开功能菜单');
         openFunctionMenu(_e);
       },
     });
@@ -531,26 +516,23 @@ async function initPet() {
     }
     log('Live2D 舞台创建完成');
 
-    // 加载模型
     const loaded = await loadModelWithProgress(s.modelPath);
     if (loaded) {
       Live2DManager.mountToStage(stageSize.width, stageSize.height, 1);
       log('Live2D 模型挂载完成');
     } else {
-      notifyInitError('Live2D 模型加载失败（可在设置里更换模型/关闭 CDN）');
+      notifyInitError('Live2D 模型加载失败（可在设置里更换模型或关闭 CDN）');
     }
 
-    // 初始化聊天监听
     ChatMonitor.init(
       {
         autoTrigger: s.autoTrigger,
         triggerInterval: s.triggerInterval,
         triggerProbability: s.triggerProbability,
+        commentTriggerMode: s.commentTriggerMode,
       },
       () => {
-        bubbleText.value = '';
-        bubbleDone.value = false;
-        Commentator.generate();
+        void Commentator.generate();
       },
     );
 
@@ -561,7 +543,6 @@ async function initPet() {
   }
 }
 
-/** 模型切换 */
 async function onModelChange(path: string) {
   const loaded = await loadModelWithProgress(path);
   if (loaded) {
@@ -571,25 +552,23 @@ async function onModelChange(path: string) {
   scheduleStatusCheck('model-change');
 }
 
-/** 气泡隐藏 */
 function onBubbleHidden() {
   bubbleText.value = '';
-  bubbleDone.value = false;
+  bubbleDone.value = true;
 }
 
-// 监听设置变化，更新 monitor 配置
 watch(
   () => ({
     autoTrigger: settings.value.autoTrigger,
     triggerInterval: settings.value.triggerInterval,
     triggerProbability: settings.value.triggerProbability,
+    commentTriggerMode: settings.value.commentTriggerMode,
   }),
   (config) => {
     ChatMonitor.updateConfig(config);
   },
 );
 
-// 监听动作循环开关
 watch(
   () => settings.value.autoMotionLoop,
   (enabled) => {
@@ -597,7 +576,6 @@ watch(
   },
 );
 
-// 监听缩放变化
 watch(
   () => settings.value.petScale,
   (scale) => {
@@ -631,7 +609,6 @@ onUnmounted(() => {
   Live2DStage.destroy();
 });
 </script>
-
 <style lang="scss" scoped>
 @use './styles/theme-arknights.scss' as theme;
 

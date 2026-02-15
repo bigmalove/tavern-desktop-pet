@@ -28,6 +28,18 @@ export const RECOMMENDED_MODELS = [
 export const COMMENT_STYLES = ['毒舌吐槽', '可爱卖萌', '冷静分析', '傲娇', '自定义'] as const;
 export type CommentStyle = (typeof COMMENT_STYLES)[number];
 
+/** 吐槽自动触发时机 */
+export const COMMENT_TRIGGER_MODES = ['user', 'ai', 'both'] as const;
+export type CommentTriggerMode = (typeof COMMENT_TRIGGER_MODES)[number];
+export const COMMENT_TRIGGER_MODE_OPTIONS: ReadonlyArray<{
+  value: CommentTriggerMode;
+  label: string;
+}> = [
+  { value: 'user', label: '用户发送后评论' },
+  { value: 'ai', label: 'AI回复后评论' },
+  { value: 'both', label: '同时评论' },
+];
+
 /** 表情 COT 标签列表（固定） */
 export const EMOTION_TAGS = [
   '默认',
@@ -63,6 +75,7 @@ export const DEFAULTS = {
   PET_SCALE: 0.3,
   PET_POSITION: { x: -1, y: -1 }, // -1 表示使用默认位置
   AUTO_MOTION_LOOP: true,
+  COMMENT_TRIGGER_MODE: 'ai' as CommentTriggerMode,
   COMMENT_STYLE: '毒舌吐槽' as CommentStyle,
   AUTO_TRIGGER: true,
   TRIGGER_INTERVAL: 3,

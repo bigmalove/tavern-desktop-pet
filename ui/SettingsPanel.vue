@@ -118,6 +118,14 @@
                 <div class="hint">启用后，采样参数将使用酒馆当前预设的值。</div>
               </div>
 
+              <div class="form-group">
+                <label>
+                  <input type="checkbox" v-model="settings.apiConfig.sendWorldInfo" />
+                  发送世界书（World Info）
+                </label>
+                <div class="hint">关闭后不注入世界书提示词，默认关闭。</div>
+              </div>
+
               <template v-if="!settings.apiConfig.usePresetSampling">
                 <div class="form-row">
                   <div class="form-group half">
@@ -278,6 +286,18 @@
               </div>
 
               <template v-if="settings.autoTrigger">
+                <div class="form-group">
+                  <label>触发时机</label>
+                  <select v-model="settings.commentTriggerMode">
+                    <option
+                      v-for="option in commentTriggerModeOptions"
+                      :key="option.value"
+                      :value="option.value"
+                    >
+                      {{ option.label }}
+                    </option>
+                  </select>
+                </div>
                 <div class="form-row">
                   <div class="form-group half">
                     <label>触发间隔（每 N 条消息）</label>
@@ -659,6 +679,53 @@
                 </button>
               </div>
             </section>
+
+            <section class="setting-section" v-show="activeSection === 'about'">
+              <h4>
+                <span class="section-index">06</span>
+                <span class="section-label">关于</span>
+                <span class="section-sub">ABOUT & LICENSE</span>
+              </h4>
+
+              <div class="about-card">
+                <div class="about-title">插件发布地址</div>
+                <a
+                  class="about-link"
+                  href="https://discord.com/channels/1134557553011998840/1472242483806077061"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  https://discord.com/channels/1134557553011998840/1472242483806077061
+                </a>
+              </div>
+
+              <div class="about-card">
+                <div class="about-title">版权与使用声明</div>
+                <ul class="about-list">
+                  <li>
+                    本插件加载或展示的 Live2D 模型及配套素材，其版权归原作者或原项目方所有；请在使用前自行确认并遵守对应授权条款。
+                  </li>
+                  <li>
+                    除权利人另行授权外，Live2D 模型仅供学习、研究与交流，不得用于商业用途或再分发。
+                  </li>
+                  <li>
+                    本项目采用
+                    <a
+                      class="about-link"
+                      href="https://creativecommons.org/licenses/by-nc-sa/4.0/deed.zh-hans"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      CC BY-NC-SA 4.0
+                    </a>
+                    共享协议。使用、改编与传播时请遵守“署名-非商业性使用-相同方式共享”，并对第三方素材单独核验授权。
+                  </li>
+                  <li>
+                    使用本插件及其衍生内容时，必须遵守你所在地及适用司法辖区的法律法规；任何违反法律法规的使用行为与后果均由使用者自行承担。
+                  </li>
+                </ul>
+              </div>
+            </section>
           </div>
         </div>
 
@@ -706,7 +773,15 @@ import {
   setTTSEnabled,
   type TTSSpeakerVoice,
 } from '../audio/tts-config';
-import { API_SOURCES, COMMENT_STYLES, EMOTION_TAGS, RECOMMENDED_MODELS, SCRIPT_NAME, type EmotionTag } from '../core/constants';
+import {
+  API_SOURCES,
+  COMMENT_STYLES,
+  COMMENT_TRIGGER_MODE_OPTIONS,
+  EMOTION_TAGS,
+  RECOMMENDED_MODELS,
+  SCRIPT_NAME,
+  type EmotionTag,
+} from '../core/constants';
 import { createDefaultEmotionConfigs, parseAliasesText, type EmotionConfig } from '../core/emotion';
 import { useSettingsStore } from '../core/settings';
 import { matchLive2DExpression, matchLive2DMotion } from '../live2d/expression-motion';
@@ -723,7 +798,7 @@ const emit = defineEmits<{
   'model-change': [path: string];
 }>();
 
-type SectionKey = 'api' | 'live2d' | 'comment' | 'expression' | 'tts';
+type SectionKey = 'api' | 'live2d' | 'comment' | 'expression' | 'tts' | 'about';
 
 const sectionTabs: ReadonlyArray<{
   key: SectionKey;
@@ -736,6 +811,7 @@ const sectionTabs: ReadonlyArray<{
   { key: 'comment', index: '03', label: '吐槽', en: 'COMMENT SYSTEM' },
   { key: 'expression', index: '04', label: '表情', en: 'EMOTION COT' },
   { key: 'tts', index: '05', label: 'TTS', en: 'VOICE CONTROL' },
+  { key: 'about', index: '06', label: '关于', en: 'ABOUT & LICENSE' },
 ];
 
 const activeSection = ref<SectionKey>('api');
@@ -745,6 +821,7 @@ const { settings } = storeToRefs(store);
 
 const recommendedModels = RECOMMENDED_MODELS;
 const commentStyles = COMMENT_STYLES;
+const commentTriggerModeOptions = COMMENT_TRIGGER_MODE_OPTIONS;
 const apiSources = API_SOURCES;
 const showBrowser = ref(false);
 const customModelUrl = ref(settings.value.modelPath || '');
@@ -2162,6 +2239,38 @@ watch(
   margin-top: 8px;
   padding-top: 10px;
   border-top: 1px dashed rgba(255, 255, 255, 0.2);
+}
+
+.about-card {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(0, 0, 0, 0.26);
+  @include theme.tech-grid(18px, 0.02);
+}
+
+.about-title {
+  margin-bottom: 8px;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: theme.$ark-accent-yellow;
+}
+
+.about-link {
+  color: theme.$ark-accent-cyan;
+  word-break: break-all;
+  text-decoration: underline;
+}
+
+.about-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #d5d5d5;
 }
 
 .status-badge {

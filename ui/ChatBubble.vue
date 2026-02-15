@@ -1,7 +1,7 @@
 <template>
   <div
-    class="chat-bubble"
     v-if="visible"
+    class="chat-bubble"
     :style="bubbleStyle"
   >
     <div class="bubble-content">
@@ -15,14 +15,17 @@
         ×
       </button>
       <span class="bubble-text">{{ displayText }}</span>
-      <span class="cursor" v-if="!isDone">|</span>
+      <span
+        v-if="!isDone"
+        class="cursor"
+      >|</span>
     </div>
     <div class="bubble-arrow"></div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onUnmounted } from 'vue';
+import { onUnmounted, ref, watch } from 'vue';
 import { Live2DManager } from '../live2d/manager';
 
 const props = defineProps<{
@@ -37,12 +40,17 @@ const emit = defineEmits<{
 const visible = ref(false);
 const displayText = ref('');
 const bubbleStyle = ref<Record<string, string>>({});
+
 const HEAD_ANCHOR_RATIO = 0.2;
 const BUBBLE_GAP = 12;
 const MIN_BUBBLE_TOP = 8;
 const EDGE_PADDING = 8;
+const LOADING_FRAMES = ['。。。', '。。', '。', '。。'] as const;
+const LOADING_INTERVAL_MS = 340;
 
 let positionTimer: ReturnType<typeof setInterval> | null = null;
+let loadingTimer: ReturnType<typeof setInterval> | null = null;
+let loadingFrameIndex = 0;
 
 function getTopWindow(): Window {
   try {
@@ -123,48 +131,63 @@ function startPositionSync(): void {
 }
 
 function stopPositionSync(): void {
-  if (positionTimer) {
-    clearInterval(positionTimer);
-    positionTimer = null;
-  }
+  if (!positionTimer) return;
+  clearInterval(positionTimer);
+  positionTimer = null;
 }
 
-// 监听文本变化 — 流式更新
-watch(
-  () => props.text,
-  (newText) => {
-    if (!newText) {
-      visible.value = false;
-      displayText.value = '';
-      stopPositionSync();
-      return;
-    }
+function startLoadingAnimation(): void {
+  if (loadingTimer) return;
+  loadingFrameIndex = 0;
+  displayText.value = LOADING_FRAMES[loadingFrameIndex];
+  loadingTimer = setInterval(() => {
+    loadingFrameIndex = (loadingFrameIndex + 1) % LOADING_FRAMES.length;
+    displayText.value = LOADING_FRAMES[loadingFrameIndex];
+  }, LOADING_INTERVAL_MS);
+}
+
+function stopLoadingAnimation(): void {
+  if (!loadingTimer) return;
+  clearInterval(loadingTimer);
+  loadingTimer = null;
+}
+
+function syncBubbleState(): void {
+  const text = String(props.text || '');
+
+  if (text) {
     visible.value = true;
-
-    // 打字机效果：直接更新显示文本
-    displayText.value = newText;
+    displayText.value = text;
+    stopLoadingAnimation();
     startPositionSync();
-  },
-);
+    return;
+  }
 
-// 监听生成完成 — 保持显示，等待手动关闭
-watch(
-  () => props.isDone,
-  (done) => {
-    if (done && visible.value) {
-      displayText.value = props.text;
-    }
-  },
-);
+  if (!props.isDone) {
+    visible.value = true;
+    startLoadingAnimation();
+    startPositionSync();
+    return;
+  }
+
+  visible.value = false;
+  displayText.value = '';
+  stopLoadingAnimation();
+  stopPositionSync();
+}
+
+watch([() => props.text, () => props.isDone], syncBubbleState, { immediate: true });
 
 function closeBubble(): void {
   visible.value = false;
   displayText.value = '';
+  stopLoadingAnimation();
   stopPositionSync();
   emit('hidden');
 }
 
 onUnmounted(() => {
+  stopLoadingAnimation();
   stopPositionSync();
 });
 </script>

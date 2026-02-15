@@ -167,6 +167,7 @@ index.ts
 | `apiConfig.model` | 模型名称 | `gpt-4o-mini` |
 | `apiConfig.max_tokens` | 最大回复 tokens | `150` |
 | `apiConfig.temperature` | 温度 | `0.9` |
+| `apiConfig.sendWorldInfo` | 是否发送世界书提示词 | `false` |
 | `modelPath` | Live2D 模型路径 | `live2d-widget-model/shizuku/index.json` |
 | `petScale` | 宠物缩放 | `0.3` |
 | `petPosition` | 宠物位置 (x, y) | 右下角 |
