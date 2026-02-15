@@ -51,6 +51,7 @@ export class GestureRecognizer {
   private doubleClickTimer: number | null = null;
   private longPressFired = false;
   private moved = false;
+  private activePointerId: number | null = null;
   private destroyed = false;
 
   private boundPointerDown: (e: PointerEvent) => void;
@@ -103,6 +104,15 @@ export class GestureRecognizer {
 
   private handlePointerDown(_e: PointerEvent): void {
     if (this.destroyed) return;
+    if (_e.pointerType === 'touch' && _e.isPrimary === false) {
+      this.resetState();
+      return;
+    }
+
+    if (this.activePointerId !== null && _e.pointerId !== this.activePointerId) {
+      return;
+    }
+    this.activePointerId = _e.pointerId;
 
     this.startPos = { x: _e.clientX, y: _e.clientY };
     this.longPressFired = false;
@@ -131,6 +141,7 @@ export class GestureRecognizer {
 
   private handlePointerMove(_e: PointerEvent): void {
     if (this.destroyed || this.state !== 'pending') return;
+    if (this.activePointerId !== _e.pointerId) return;
 
     const dx = _e.clientX - this.startPos.x;
     const dy = _e.clientY - this.startPos.y;
@@ -145,6 +156,8 @@ export class GestureRecognizer {
 
   private handlePointerUp(_e: PointerEvent): void {
     if (this.destroyed) return;
+    if (this.activePointerId !== _e.pointerId) return;
+    this.activePointerId = null;
     this.clearLongPressTimer();
 
     // 正在拖拽（jQueryUI 或自身检测到移动）→ 不触发任何手势
@@ -182,6 +195,14 @@ export class GestureRecognizer {
         this.onGesture({ type: 'tap', clientX: x, clientY: y });
       }, this.config.doubleClickWindow);
     }
+  }
+
+  private resetState(): void {
+    this.activePointerId = null;
+    this.longPressFired = false;
+    this.moved = false;
+    this.state = 'idle';
+    this.clearAllTimers();
   }
 
   private clearLongPressTimer(): void {

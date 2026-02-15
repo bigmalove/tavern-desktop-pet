@@ -402,6 +402,7 @@ export const Live2DStage = {
       startLeft: 0,
       startTop: 0,
       dragging: false,
+      touchPointerIds: new Set<number>(),
     };
 
     const getRectLeftTop = () => {
@@ -425,6 +426,13 @@ export const Live2DStage = {
 
     dragTarget.addEventListener('pointerdown', (e: PointerEvent) => {
       if (e.button !== 0) return;
+      if (e.pointerType === 'touch') {
+        state.touchPointerIds.add(e.pointerId);
+        if (state.touchPointerIds.size > 1) {
+          cleanup();
+          return;
+        }
+      }
       if (state.pointerId !== null) return;
 
       state.pointerId = e.pointerId;
@@ -444,6 +452,10 @@ export const Live2DStage = {
 
     dragTarget.addEventListener('pointermove', (e: PointerEvent) => {
       if (state.pointerId === null || e.pointerId !== state.pointerId) return;
+      if (e.pointerType === 'touch' && state.touchPointerIds.size > 1) {
+        cleanup();
+        return;
+      }
 
       const dx = e.clientX - state.startClientX;
       const dy = e.clientY - state.startClientY;
@@ -476,6 +488,9 @@ export const Live2DStage = {
     }, { passive: false });
 
     const onPointerUp = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') {
+        state.touchPointerIds.delete(e.pointerId);
+      }
       if (state.pointerId === null || e.pointerId !== state.pointerId) return;
 
       const dragging = state.dragging;
@@ -806,15 +821,106 @@ export const Live2DStage = {
       });
     }
 
-    // 榧犳爣婊氳疆缂╂斁
+    // Mouse wheel + touch pinch zoom.
     const interactionTarget = this.interactionLayer ?? this.container;
+    const SCALE_MIN = 0.1;
+    const SCALE_MAX = 3;
+    const SCALE_EPSILON = 0.002;
+    let currentScale = Number.isFinite(options.scale) ? options.scale : 1;
+    let isPinching = false;
+    let pinchStartDistance = 0;
+    let pinchStartScale = currentScale;
+    const activeTouchPointers = new Map<number, { x: number; y: number }>();
+
+    const emitScaleChange = (nextScale: number) => {
+      const safeScale = Math.max(SCALE_MIN, Math.min(SCALE_MAX, nextScale));
+      if (Math.abs(safeScale - currentScale) < SCALE_EPSILON) return;
+      currentScale = safeScale;
+      options.scale = safeScale;
+      options.onScaleChange?.(safeScale);
+    };
+
+    const getPinchDistance = () => {
+      if (activeTouchPointers.size < 2) return 0;
+      const points = Array.from(activeTouchPointers.values());
+      const a = points[0];
+      const b = points[1];
+      const dx = a.x - b.x;
+      const dy = a.y - b.y;
+      return Math.sqrt(dx * dx + dy * dy);
+    };
+
+    const setDraggableState = (enabled: boolean) => {
+      if (typeof draggable !== 'function') return;
+      try {
+        $container.draggable(enabled ? 'enable' : 'disable');
+      } catch {
+        // ignore
+      }
+    };
+
+    const onTouchPointerDown = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch') return;
+      activeTouchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (activeTouchPointers.size < 2) return;
+
+      const distance = getPinchDistance();
+      if (distance <= 0) return;
+
+      if (!isPinching) {
+        isPinching = true;
+        setDraggableState(false);
+      }
+      pinchStartDistance = distance;
+      pinchStartScale = currentScale;
+      e.preventDefault();
+    };
+
+    const onTouchPointerMove = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch') return;
+      if (!activeTouchPointers.has(e.pointerId)) return;
+
+      activeTouchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (!isPinching || activeTouchPointers.size < 2) return;
+
+      const distance = getPinchDistance();
+      if (distance <= 0 || pinchStartDistance <= 0) return;
+
+      const ratio = distance / pinchStartDistance;
+      emitScaleChange(pinchStartScale * ratio);
+      e.preventDefault();
+    };
+
+    const onTouchPointerEnd = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch') return;
+      activeTouchPointers.delete(e.pointerId);
+
+      if (activeTouchPointers.size >= 2) {
+        const distance = getPinchDistance();
+        if (distance > 0) {
+          pinchStartDistance = distance;
+          pinchStartScale = currentScale;
+        }
+        return;
+      }
+
+      pinchStartDistance = 0;
+      pinchStartScale = currentScale;
+      if (isPinching) {
+        isPinching = false;
+        setDraggableState(true);
+      }
+    };
+
+    interactionTarget.addEventListener('pointerdown', onTouchPointerDown, { passive: false });
+    interactionTarget.addEventListener('pointermove', onTouchPointerMove, { passive: false });
+    interactionTarget.addEventListener('pointerup', onTouchPointerEnd);
+    interactionTarget.addEventListener('pointercancel', onTouchPointerEnd);
+
     interactionTarget.addEventListener('wheel', (e: WheelEvent) => {
       e.preventDefault();
       const delta = e.deltaY > 0 ? -0.05 : 0.05;
-      const baseScale = Number.isFinite(options.scale) ? options.scale : 1;
-      const newScale = Math.max(0.1, Math.min(3, baseScale + delta));
-      options.scale = newScale;
-      options.onScaleChange?.(newScale);
+      emitScaleChange(currentScale + delta);
     }, { passive: false });
 
     // Gesture recognizer (replaces raw click handler).
@@ -834,7 +940,10 @@ export const Live2DStage = {
             break;
         }
       },
-      () => $container.hasClass('ui-draggable-dragging') || $container.hasClass(this._dragClass),
+      () =>
+        isPinching ||
+        $container.hasClass('ui-draggable-dragging') ||
+        $container.hasClass(this._dragClass),
     );
     this._startInteractionSyncTimer();
 
