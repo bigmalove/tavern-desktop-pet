@@ -129,7 +129,7 @@
                 </div>
 
                 <div class="advanced-toggle" @click="showAdvanced = !showAdvanced">
-                  <span class="toggle-icon">{{ showAdvanced ? '▼' : '?' }}</span>
+                  <span class="toggle-icon">{{ showAdvanced ? '▼' : '▶' }}</span>
                   高级采样参数
                 </div>
 
@@ -465,7 +465,7 @@
 
                   <div class="form-group">
                     <div class="advanced-toggle" @click="showEmotionAdvanced = !showEmotionAdvanced">
-                      <span class="toggle-icon">{{ showEmotionAdvanced ? '▼' : '?' }}</span>
+                      <span class="toggle-icon">{{ showEmotionAdvanced ? '▼' : '▶' }}</span>
                       <span>{{ showEmotionAdvanced ? '隐藏高级选项' : '显示高级选项' }}</span>
                     </div>
                     <div class="hint">高级选项包含：别名映射、TTS 默认语气、动作启用开关。</div>
@@ -497,21 +497,30 @@
                         </option>
                       </select>
 
-                      <select v-model="cfg.live2dMotion.group" :disabled="!cfg.live2dMotion.enabled">
+                      <select
+                        :value="getMotionOverrideValue(cfg)"
+                        :disabled="!cfg.live2dMotion.enabled"
+                        @change="onMotionOverrideChange(cfg, $event)"
+                      >
                         <option value="">（自动匹配）</option>
                         <option
-                          v-if="cfg.live2dMotion.group && !live2dMotionOptionSet.has(cfg.live2dMotion.group)"
-                          :value="cfg.live2dMotion.group"
+                          v-if="getMotionOverrideValue(cfg) && !live2dMotionOptionSet.has(getMotionOverrideValue(cfg))"
+                          :value="getMotionOverrideValue(cfg)"
                         >
-                          {{ cfg.live2dMotion.group }}（自定义）
+                          {{ getMotionOverrideLabel(cfg) }}（自定义）
                         </option>
                         <option v-for="opt in live2dMotionSelectOptions" :key="opt.key" :value="opt.value">
                           {{ opt.label }}
                         </option>
                       </select>
 
-                      <button class="btn btn-secondary emotion-map-preview-btn" type="button" @click="previewEmotion(cfg.tag)">
-                        ?
+                      <button
+                        class="btn btn-secondary emotion-map-preview-btn"
+                        type="button"
+                        title="预览动作"
+                        @click="previewEmotion(cfg.tag)"
+                      >
+                        ▶
                       </button>
                     </div>
                   </div>
@@ -653,7 +662,7 @@
               </div>
 
               <div class="advanced-toggle" @click="showLipSyncAdvanced = !showLipSyncAdvanced">
-                <span class="toggle-icon">{{ showLipSyncAdvanced ? '▼' : '?' }}</span>
+                <span class="toggle-icon">{{ showLipSyncAdvanced ? '▼' : '▶' }}</span>
                 口型同步高级兜底
               </div>
 
@@ -1222,38 +1231,163 @@ const live2dExpressionOptionSet = computed(() => {
   return new Set(live2dExpressionOptions.value);
 });
 
-const live2dMotionSelectOptions = computed<Array<{ key: string; value: string; label: string }>>(() => {
+type MotionOverridePayload = {
+  group: string;
+  index: number;
+  name?: string;
+};
+
+type MotionSelectOption = {
+  key: string;
+  value: string;
+  label: string;
+};
+
+function normalizeMotionIndex(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
+}
+
+function normalizeMotionOverridePayload(payload: MotionOverridePayload): MotionOverridePayload {
+  return {
+    group: String(payload.group ?? '').trim(),
+    index: normalizeMotionIndex(payload.index),
+    name: String(payload.name ?? '').trim(),
+  };
+}
+
+function encodeMotionOption(payload: MotionOverridePayload): string {
+  const normalized = normalizeMotionOverridePayload(payload);
+  if (!normalized.group) return '';
+  return JSON.stringify(normalized);
+}
+
+function decodeMotionOption(raw: string): MotionOverridePayload | null {
+  const text = String(raw || '').trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text) as Partial<MotionOverridePayload>;
+    if (!parsed || typeof parsed !== 'object') return null;
+    const group = String(parsed.group ?? '').trim();
+    if (!group) return null;
+    return {
+      group,
+      index: normalizeMotionIndex(parsed.index),
+      name: String(parsed.name ?? '').trim(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function resolveMotionOverridePayload(cfg: EmotionConfig): MotionOverridePayload | null {
+  const overrideGroup = String(cfg?.live2dMotion?.group || '').trim();
+  if (!overrideGroup) return null;
+  const overrideIndex = normalizeMotionIndex(cfg?.live2dMotion?.index);
+
+  const exactByGroupIndex = live2dMotions.value.find((motion) => {
+    const group = String(motion?.group ?? '').trim();
+    const index = normalizeMotionIndex(motion?.index);
+    return group === overrideGroup && index === overrideIndex;
+  });
+  if (exactByGroupIndex) {
+    return normalizeMotionOverridePayload({
+      group: exactByGroupIndex.group,
+      index: exactByGroupIndex.index,
+      name: exactByGroupIndex.name,
+    });
+  }
+
+  // 兼容旧配置：group 字段历史上可能被写成 motion name。
+  const lower = overrideGroup.toLowerCase();
+  const byName =
+    live2dMotions.value.find((motion) => {
+      const name = String(motion?.name ?? '').trim().toLowerCase();
+      const index = normalizeMotionIndex(motion?.index);
+      return name === lower && index === overrideIndex;
+    }) ||
+    live2dMotions.value.find((motion) => String(motion?.name ?? '').trim().toLowerCase() === lower);
+  if (byName) {
+    return normalizeMotionOverridePayload({
+      group: byName.group,
+      index: byName.index,
+      name: byName.name,
+    });
+  }
+
+  return normalizeMotionOverridePayload({
+    group: overrideGroup,
+    index: overrideIndex,
+  });
+}
+
+function getMotionOverrideValue(cfg: EmotionConfig): string {
+  const payload = resolveMotionOverridePayload(cfg);
+  if (!payload) return '';
+  return encodeMotionOption(payload);
+}
+
+function getMotionOverrideLabel(cfg: EmotionConfig): string {
+  const payload = resolveMotionOverridePayload(cfg);
+  if (!payload) return '';
+  if (payload.name) {
+    const groupLabel = payload.group ? `${payload.group}#${payload.index}` : `#${payload.index}`;
+    return `${payload.name}（动作 ${groupLabel}）`;
+  }
+  return `${payload.group || '(空动作组)'}#${payload.index}`;
+}
+
+function setMotionOverrideValue(cfg: EmotionConfig, rawValue: unknown): void {
+  const parsed = decodeMotionOption(String(rawValue || '').trim());
+  if (!parsed) {
+    cfg.live2dMotion.group = '';
+    cfg.live2dMotion.index = 0;
+    return;
+  }
+  cfg.live2dMotion.group = parsed.group;
+  cfg.live2dMotion.index = parsed.index;
+}
+
+function onMotionOverrideChange(cfg: EmotionConfig, event: Event): void {
+  const target = event?.target as HTMLSelectElement | null;
+  setMotionOverrideValue(cfg, target?.value || '');
+}
+
+const live2dMotionSelectOptions = computed<Array<MotionSelectOption>>(() => {
   const seen = new Set<string>();
-  const options: Array<{ key: string; value: string; label: string }> = [];
+  const options: MotionSelectOption[] = [];
 
   for (const motion of live2dMotions.value) {
-    const value = String(motion?.name ?? '').trim();
-    if (!value) continue;
-    const dedupKey = value.toLowerCase();
-    if (seen.has(dedupKey)) continue;
-    seen.add(dedupKey);
-    const groupLabel = motion.group ? `${motion.group}#${motion.index}` : `#${motion.index}`;
+    const group = String(motion?.group ?? '').trim();
+    if (!group) continue;
+    const index = normalizeMotionIndex(motion?.index);
+    const name = String(motion?.name ?? '').trim();
+    const value = encodeMotionOption({ group, index, name });
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    const groupLabel = `${group}#${index}`;
+    const safeName = name || '(未命名动作)';
     options.push({
-      key: `motion_${dedupKey}_${groupLabel}`,
+      key: `motion_${groupLabel}_${safeName}`.replace(/\s+/g, '_'),
       value,
-      label: `${value}（动作 ${groupLabel}）`,
+      label: `${safeName}（动作 ${groupLabel}）`,
     });
   }
 
   for (const group of live2dMotionGroups.value) {
-    const value = String(group?.name ?? '').trim();
-    if (!value) continue;
-    const dedupKey = value.toLowerCase();
-    if (seen.has(dedupKey)) continue;
-    seen.add(dedupKey);
+    const groupName = String(group?.name ?? '').trim();
+    if (!groupName) continue;
+    const value = encodeMotionOption({ group: groupName, index: 0 });
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
     options.push({
-      key: `group_${dedupKey}_${group.count}`,
+      key: `group_${groupName}_${group.count}`.replace(/\s+/g, '_'),
       value,
-      label: `${value}（动作组 ${group.count}）`,
+      label: `${groupName}（动作组 ${group.count}）`,
     });
   }
 
-  return options.sort((a, b) => a.value.localeCompare(b.value));
+  return options.sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'));
 });
 
 const live2dMotionOptionSet = computed(() => {
@@ -1823,8 +1957,8 @@ function autoMatchLive2DOverrides(overwrite = false): void {
     if (motionEnabled && (overwrite || !motionGroupOverride)) {
       const matchedMotion = matchLive2DMotion(model, cfg.tag);
       if (matchedMotion) {
-        cfg.live2dMotion.group = matchedMotion.name || matchedMotion.group;
-        cfg.live2dMotion.index = matchedMotion.index || 0;
+        cfg.live2dMotion.group = matchedMotion.group;
+        cfg.live2dMotion.index = matchedMotion.index;
         filled += 1;
       }
     }

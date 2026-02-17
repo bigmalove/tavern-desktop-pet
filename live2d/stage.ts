@@ -1,10 +1,10 @@
-﻿import { log, warn } from '../utils/dom';
+import { log, warn } from '../utils/dom';
 import { GestureRecognizer, type GestureEvent } from '../utils/gesture-recognizer';
 import { Live2DLoader } from './loader';
 
 /**
- * Live2D PIXI 娓叉煋鑸炲彴
- * 鍦ㄩ厭棣嗛〉闈㈠垱寤?fixed 瀹氫綅鐨?canvas锛屾敮鎸佹嫋鎷藉拰缂╂斁
+ * Live2D PIXI 渲染舞台
+ * 在酒馆页面创建 fixed 定位的 canvas，支持拖拽和缩放
  */
 export const Live2DStage = {
   app: null as any,
@@ -68,7 +68,7 @@ export const Live2DStage = {
     if (!this.container) return false;
     if (this.mountMode === 'preview') return false;
 
-    // 榛樿浣嶇疆浣跨敤 right/bottom 鍥哄畾锛屾棤闇€鍦?resize 鏃跺啓鍏?left/top锛堥伩鍏嶆妸榛樿浣嶇疆鎸佷箙鍖栨垚鏁板€硷級
+    // 默认位置使用 right/bottom 固定，无需在 resize 时写入 left/top（避免把默认位置持久化成数值）
     const hasCustom = this.container.style.right === 'auto' || this.container.style.bottom === 'auto';
     const hasExplicitLeftTop = !!this.container.style.left || !!this.container.style.top;
     return hasCustom || hasExplicitLeftTop;
@@ -193,12 +193,12 @@ export const Live2DStage = {
     }
   },
 
-  /** 鑾峰彇鐖剁獥鍙?*/
+  /** 获取父窗口 */
   _top(): Window {
     return window.parent ?? window;
   },
 
-  /** 鑾峰彇 PIXI */
+  /** 获取 PIXI */
   _getPIXI(): any {
     const top = this._top();
     return Live2DLoader.getPixi(top);
@@ -517,7 +517,7 @@ export const Live2DStage = {
         // ignore
       }
 
-      // iOS 鍦?pointerup 鍚庡彲鑳藉嚭鐜扮矘婊炵偣鍑伙紝杩欓噷寤惰繜娓呴櫎 selection
+      // iOS 在 pointerup 后可能出现粘滞点击，这里延迟清除 selection
       try {
         top.getSelection?.()?.removeAllRanges?.();
       } catch {
@@ -604,7 +604,7 @@ export const Live2DStage = {
   },
 
   /**
-   * 鍒涘缓娓叉煋瀹瑰櫒鍜?PIXI Application
+   * 创建渲染容器和 PIXI Application
    */
   create(options: {
     width: number;
@@ -624,14 +624,14 @@ export const Live2DStage = {
       return false;
     }
 
-    // 闃叉鑴氭湰鐑噸杞芥垨閲嶅鍒濆鍖栨椂娈嬬暀澶氫釜鑸炲彴
+    // 防止脚本热重载或重复初始化时残留多个舞台
     this.destroy();
     this._onPositionChange = options.onPositionChange ?? null;
     this._bindWindowResize({ width: options.width, height: options.height });
     const stale = top.document.getElementById('desktop-pet-stage');
     if (stale) stale.remove();
 
-    // 鍒涘缓瀹瑰櫒 div
+    // 创建容器 div
     this.container = top.document.createElement('div');
     this.container.id = 'desktop-pet-stage';
     this.container.style.cssText = `
@@ -678,7 +678,7 @@ export const Live2DStage = {
 
     top.document.body.appendChild(this.container);
 
-    // 鍒涘缓 canvas
+    // 创建 canvas
     this.canvas = top.document.createElement('canvas');
     this.canvas.style.cssText = 'width: 100%; height: 100%; pointer-events: none;';
     this.container.appendChild(this.canvas);
@@ -698,7 +698,7 @@ export const Live2DStage = {
     `;
     this.container.appendChild(this.interactionLayer);
 
-    // 鍒涘缓 PIXI Application
+    // 创建 PIXI Application
     const dpr = top.devicePixelRatio || 1;
     this.canvas.width = Math.floor(options.width * dpr);
     this.canvas.height = Math.floor(options.height * dpr);
@@ -749,7 +749,7 @@ export const Live2DStage = {
       antialias: true,
     });
 
-    // 浣跨敤 jQueryUI 瀹炵幇鎷栨嫿
+    // 使用 jQueryUI 实现拖拽
     const $container = $(this.container);
     const draggable = ($container as any).draggable;
     if (typeof draggable === 'function') {
@@ -952,14 +952,14 @@ export const Live2DStage = {
   },
 
   /**
-   * 鑾峰彇 PIXI Application 鐨?stage
+   * 获取 PIXI Application 的 stage
    */
   getStage(): any {
     return this.app?.stage;
   },
 
   /**
-   * 褰撳墠鏄惁澶勪簬鈥滈瑙堟寕杞解€濈姸鎬侊紙鐢诲竷琚寕鍒拌缃潰鏉跨瓑瀹瑰櫒鍐咃級
+   * 当前是否处于“预览挂载”状态（画布被挂到设置面板等容器内）
    */
   isPreviewMounted(): boolean {
     return this.mountMode === 'preview';
@@ -999,7 +999,7 @@ export const Live2DStage = {
       // ignore
     }
 
-    // 棰勮鎬佷笉搴斿啓鍏ヤ綅缃寔涔呭寲
+    // 预览态不应写入位置持久化
     this._onPositionChange = null;
     this._unbindWindowResize();
 
@@ -1078,7 +1078,7 @@ export const Live2DStage = {
       // ignore
     }
 
-    // 鎭㈠绐楀彛 resize clamp
+    // 恢复窗口 resize clamp
     this._bindWindowResize({ width: entry.width, height: entry.height });
 
     const restore = this._pendingFloatingResize ?? { width: entry.width, height: entry.height };
@@ -1089,7 +1089,8 @@ export const Live2DStage = {
   },
 
   /**
-   * 璋冩暣瀹瑰櫒澶у皬锛堟诞绐楁ā寮忥級銆傝嫢褰撳墠澶勪簬棰勮鎸傝浇锛屽垯寤跺悗鍒?popMount 鍚庡啀搴旂敤銆?   */
+   * 调整容器大小（浮窗模式）。若当前处于预览挂载，则延后到 popMount 后再应用。
+   */
   resizeFloating(width: number, height: number): void {
     if (this.mountMode === 'preview') {
       this._pendingFloatingResize = { width, height };
@@ -1112,7 +1113,8 @@ export const Live2DStage = {
   },
 
   /**
-   * 璋冩暣鐢诲竷澶у皬锛堥瑙堟ā寮忥紝涓嶆敼鍐欏鍣ㄧ殑 width/height 鏍峰紡锛?   */
+   * 调整画布大小（预览模式，不改写容器的 width/height 样式）。
+   */
   resizePreview(width: number, height: number): void {
     if (this.mountMode !== 'preview') return;
     if (!this.app) return;
@@ -1125,13 +1127,15 @@ export const Live2DStage = {
   },
 
   /**
-   * 璋冩暣瀹瑰櫒澶у皬锛堝吋瀹规棫璋冪敤锛氱瓑浠蜂簬 resizeFloating锛?   */
+   * 调整容器大小（兼容旧调用：等价于 resizeFloating）。
+   */
   resize(width: number, height: number): void {
     this.resizeFloating(width, height);
   },
 
   /**
-   * 閿€姣佽垶鍙?   */
+   * 销毁舞台
+   */
   destroy(): void {
     this.hideLoadingProgress();
     this._unbindWindowResize();

@@ -606,19 +606,69 @@ export function matchLive2DMotion(
   if (override && override.enabled === false) return null;
 
   const overrideGroup = String(override?.group || '').trim();
+  const overrideIndexRaw = Number(override?.index);
+  const overrideIndex = Number.isFinite(overrideIndexRaw) ? Math.max(0, Math.floor(overrideIndexRaw)) : 0;
   if (overrideGroup) {
     const entries = collectMotionEntries(model);
+    const groupNames = collectMotionGroupNames(model);
     const lower = overrideGroup.toLowerCase();
-    const exactByName = entries.find((e) => e.name.toLowerCase() === lower);
-    if (exactByName) return { group: exactByName.group, index: exactByName.index, name: exactByName.name };
+
+    const exactByGroupIndex = entries.find((e) => {
+      const groupLower = String(e.group || '').trim().toLowerCase();
+      return groupLower === lower && e.index === overrideIndex;
+    });
+    if (exactByGroupIndex) {
+      return { group: exactByGroupIndex.group, index: exactByGroupIndex.index, name: exactByGroupIndex.name };
+    }
+
+    const exactGroup = groupNames.find((name) => String(name || '').trim().toLowerCase() === lower);
+    if (exactGroup !== undefined) {
+      const exactInGroup = entries.find((e) => String(e.group || '').trim() === exactGroup && e.index === overrideIndex);
+      if (exactInGroup) {
+        return { group: exactInGroup.group, index: exactInGroup.index, name: exactInGroup.name };
+      }
+      const firstInGroup = entries.find((e) => String(e.group || '').trim() === exactGroup);
+      if (firstInGroup) {
+        return { group: firstInGroup.group, index: firstInGroup.index, name: firstInGroup.name };
+      }
+      return { group: exactGroup, index: overrideIndex };
+    }
+
+    // 兼容旧配置：group 字段可能写入了 motion name。
+    const exactByName =
+      entries.find((e) => e.name.toLowerCase() === lower && e.index === overrideIndex) ||
+      entries.find((e) => e.name.toLowerCase() === lower);
+    if (exactByName) {
+      return { group: exactByName.group, index: exactByName.index, name: exactByName.name };
+    }
 
     const fuzzyByName = entries.find((e) => {
       const nameLower = e.name.toLowerCase();
       return nameLower.includes(lower) || lower.includes(nameLower);
     });
-    if (fuzzyByName) return { group: fuzzyByName.group, index: fuzzyByName.index, name: fuzzyByName.name };
+    if (fuzzyByName) {
+      return { group: fuzzyByName.group, index: fuzzyByName.index, name: fuzzyByName.name };
+    }
 
-    return { group: overrideGroup, index: 0 };
+    const fuzzyGroup = groupNames.find((name) => {
+      const nameLower = String(name || '').trim().toLowerCase();
+      return !!nameLower && (nameLower.includes(lower) || lower.includes(nameLower));
+    });
+    if (fuzzyGroup !== undefined) {
+      const exactInGroup = entries.find(
+        (e) => String(e.group || '').trim() === fuzzyGroup && e.index === overrideIndex,
+      );
+      if (exactInGroup) {
+        return { group: exactInGroup.group, index: exactInGroup.index, name: exactInGroup.name };
+      }
+      const firstInGroup = entries.find((e) => String(e.group || '').trim() === fuzzyGroup);
+      if (firstInGroup) {
+        return { group: firstInGroup.group, index: firstInGroup.index, name: firstInGroup.name };
+      }
+      return { group: fuzzyGroup, index: overrideIndex };
+    }
+
+    return null;
   }
 
   const mapping = EXPRESSION_LIVE2D_MAP[targetExpression];
