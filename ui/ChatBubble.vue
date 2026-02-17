@@ -31,6 +31,7 @@ import { Live2DManager } from '../live2d/manager';
 const props = defineProps<{
   text: string;
   isDone: boolean;
+  autoCloseDelaySeconds?: number;
 }>();
 
 const emit = defineEmits<{
@@ -50,6 +51,7 @@ const LOADING_INTERVAL_MS = 340;
 
 let positionTimer: ReturnType<typeof setInterval> | null = null;
 let loadingTimer: ReturnType<typeof setInterval> | null = null;
+let autoCloseTimer: ReturnType<typeof setTimeout> | null = null;
 let loadingFrameIndex = 0;
 
 function getTopWindow(): Window {
@@ -152,6 +154,38 @@ function stopLoadingAnimation(): void {
   loadingTimer = null;
 }
 
+function stopAutoCloseTimer(): void {
+  if (!autoCloseTimer) return;
+  clearTimeout(autoCloseTimer);
+  autoCloseTimer = null;
+}
+
+function getAutoCloseDelayMs(): number {
+  const delaySeconds =
+    typeof props.autoCloseDelaySeconds === 'number'
+      ? props.autoCloseDelaySeconds
+      : Number(props.autoCloseDelaySeconds ?? Number.NaN);
+  if (!Number.isFinite(delaySeconds)) return -1;
+
+  const normalizedSeconds = Math.round(delaySeconds);
+  if (normalizedSeconds < 0) return normalizedSeconds;
+  return normalizedSeconds * 1000;
+}
+
+function scheduleAutoClose(): void {
+  stopAutoCloseTimer();
+  if (!props.isDone) return;
+  if (!String(props.text || '').trim()) return;
+
+  const delayMs = getAutoCloseDelayMs();
+  if (delayMs < 0) return;
+
+  autoCloseTimer = setTimeout(() => {
+    autoCloseTimer = null;
+    closeBubble();
+  }, delayMs);
+}
+
 function syncBubbleState(): void {
   const text = String(props.text || '');
 
@@ -160,6 +194,7 @@ function syncBubbleState(): void {
     displayText.value = text;
     stopLoadingAnimation();
     startPositionSync();
+    scheduleAutoClose();
     return;
   }
 
@@ -167,6 +202,7 @@ function syncBubbleState(): void {
     visible.value = true;
     startLoadingAnimation();
     startPositionSync();
+    stopAutoCloseTimer();
     return;
   }
 
@@ -174,21 +210,26 @@ function syncBubbleState(): void {
   displayText.value = '';
   stopLoadingAnimation();
   stopPositionSync();
+  stopAutoCloseTimer();
 }
 
-watch([() => props.text, () => props.isDone], syncBubbleState, { immediate: true });
+watch([() => props.text, () => props.isDone, () => props.autoCloseDelaySeconds], syncBubbleState, {
+  immediate: true,
+});
 
 function closeBubble(): void {
   visible.value = false;
   displayText.value = '';
   stopLoadingAnimation();
   stopPositionSync();
+  stopAutoCloseTimer();
   emit('hidden');
 }
 
 onUnmounted(() => {
   stopLoadingAnimation();
   stopPositionSync();
+  stopAutoCloseTimer();
 });
 </script>
 

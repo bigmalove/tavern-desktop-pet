@@ -1,5 +1,6 @@
 import { SCRIPT_NAME } from '../core/constants';
 import { useSettingsStore } from '../core/settings';
+import { fetchEdgeVoices, getEdgeFallbackVoices } from './edge-tts-direct';
 
 // ============================================
 // TTS 音色配置 (Providers)
@@ -9,6 +10,7 @@ import { useSettingsStore } from '../core/settings';
 export const TTS_PROVIDER = {
   LITTLEWHITEBOX: 'littlewhitebox',
   GPT_SOVITS_V2: 'gpt_sovits_v2',
+  EDGE_TTS_DIRECT: 'edge_tts_direct',
 } as const;
 
 export type TTSProvider = (typeof TTS_PROVIDER)[keyof typeof TTS_PROVIDER];
@@ -260,6 +262,40 @@ let _lwbTtsCache: TTSSpeakerVoice[] | null = null;
 let _lwbTtsCacheTime = 0;
 const LWB_TTS_CACHE_MS = 5000;
 
+let _edgeTtsCache: TTSSpeakerVoice[] | null = null;
+let _edgeTtsCacheTime = 0;
+const EDGE_TTS_CACHE_MS = 2 * 60 * 1000;
+
+export async function getEdgeDirectVoiceListAsync(): Promise<TTSSpeakerVoice[]> {
+  const now = Date.now();
+  if (_edgeTtsCache && now - _edgeTtsCacheTime <= EDGE_TTS_CACHE_MS) {
+    return _edgeTtsCache;
+  }
+
+  try {
+    const voices = await fetchEdgeVoices();
+    if (voices.length > 0) {
+      _edgeTtsCache = voices;
+      _edgeTtsCacheTime = now;
+      return voices;
+    }
+  } catch (e) {
+    console.warn(`[${SCRIPT_NAME}] EdgeTTS 直连音色拉取失败，使用本地兜底:`, e);
+  }
+
+  const fallback = getEdgeFallbackVoices();
+  _edgeTtsCache = fallback;
+  _edgeTtsCacheTime = now;
+  return fallback;
+}
+
+export function getEdgeDirectVoiceList(): TTSSpeakerVoice[] {
+  if (_edgeTtsCache && _edgeTtsCache.length > 0) {
+    return _edgeTtsCache;
+  }
+  return getEdgeFallbackVoices();
+}
+
 async function fetchLittleWhiteBoxTTSConfig(): Promise<any[] | null> {
   try {
     const response = await fetch('/user/files/LittleWhiteBox_TTS.json', { cache: 'no-cache' });
@@ -276,6 +312,9 @@ export async function getTTSVoiceListAsync(): Promise<TTSSpeakerVoice[]> {
   const provider = getTTSProvider();
   if (provider === TTS_PROVIDER.GPT_SOVITS_V2) {
     return getGptSoVitsVoiceListAsync();
+  }
+  if (provider === TTS_PROVIDER.EDGE_TTS_DIRECT) {
+    return getEdgeDirectVoiceListAsync();
   }
 
   const now = Date.now();
@@ -330,6 +369,9 @@ export function getTTSVoiceList(): TTSSpeakerVoice[] {
   const provider = getTTSProvider();
   if (provider === TTS_PROVIDER.GPT_SOVITS_V2) {
     return getGptSoVitsVoiceList();
+  }
+  if (provider === TTS_PROVIDER.EDGE_TTS_DIRECT) {
+    return getEdgeDirectVoiceList();
   }
 
   if (_lwbTtsCache) {
@@ -445,7 +487,9 @@ export async function resolveVoiceByName(voiceName: string): Promise<TTSSpeakerV
   const defaultVoice =
     provider === TTS_PROVIDER.GPT_SOVITS_V2
       ? (pickFirstUsableGptSoVitsVoice(voiceList) || voiceList[0])
-      : voiceList[0];
+      : provider === TTS_PROVIDER.EDGE_TTS_DIRECT
+        ? voiceList[0]
+        : voiceList[0];
   if (defaultVoice) {
     console.warn(`[${SCRIPT_NAME}] 未找到音色 "${voiceName}"，使用默认: ${defaultVoice.name}`);
     return defaultVoice;

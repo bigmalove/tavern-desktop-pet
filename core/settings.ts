@@ -1,4 +1,4 @@
-import { klona } from 'klona';
+﻿import { klona } from 'klona';
 import { defineStore } from 'pinia';
 import { ref, watchEffect } from 'vue';
 import { z } from 'zod';
@@ -50,10 +50,10 @@ function parseSettings(raw: unknown): Settings {
   return SettingsSchema.parse({});
 }
 
-/** 设置 Schema */
+/** 璁剧疆 Schema */
 const SettingsSchema = z
   .object({
-    // API 配置
+    // API 閰嶇疆
     apiMode: z.enum(['custom', 'tavern']).default('tavern'),
     apiConfig: z
       .object({
@@ -72,7 +72,7 @@ const SettingsSchema = z
       })
       .default({}),
 
-    // Live2D 配置
+    // Live2D 閰嶇疆
     modelPath: z.string().default(DEFAULTS.MODEL_PATH),
     useCdn: z.boolean().default(true),
     petPosition: z
@@ -83,27 +83,33 @@ const SettingsSchema = z
       .default({}),
     petScale: z.number().min(0.1).max(3).default(DEFAULTS.PET_SCALE),
     autoMotionLoop: z.boolean().default(DEFAULTS.AUTO_MOTION_LOOP),
+    doubleTapRandomMotionEnabled: z.boolean().default(DEFAULTS.DOUBLE_TAP_RANDOM_MOTION_ENABLED),
+    gazeFollowMouseEnabled: z.boolean().default(DEFAULTS.GAZE_FOLLOW_MOUSE_ENABLED),
 
-    // 吐槽配置
+    // 鍚愭Ы閰嶇疆
     commentStyle: z.enum(COMMENT_STYLES).default(DEFAULTS.COMMENT_STYLE),
     commentTriggerMode: z.enum(COMMENT_TRIGGER_MODES).default(DEFAULTS.COMMENT_TRIGGER_MODE),
     customPrompt: z.string().default(''),
     roleplayName: z.string().default(DEFAULTS.ROLEPLAY_NAME),
+    roleplayIgnoreCommentStyle: z.boolean().default(DEFAULTS.ROLEPLAY_IGNORE_COMMENT_STYLE),
     sendCharacterCardContent: z.boolean().default(DEFAULTS.SEND_CHARACTER_CARD_CONTENT),
     autoTrigger: z.boolean().default(DEFAULTS.AUTO_TRIGGER),
     triggerInterval: z.number().min(1).max(100).default(DEFAULTS.TRIGGER_INTERVAL),
     triggerProbability: z.number().min(0).max(100).default(DEFAULTS.TRIGGER_PROBABILITY),
     maxChatContext: z.number().min(1).max(50).default(DEFAULTS.MAX_CHAT_CONTEXT),
+    bubbleDuration: z.number().min(-1).max(600000).default(DEFAULTS.BUBBLE_DURATION),
     useTamakoTodaySpecial: z.boolean().default(DEFAULTS.USE_TAMAKO_TODAY_SPECIAL),
+    useDiceDatabaseReference: z.boolean().default(DEFAULTS.USE_DICE_DATABASE_REFERENCE),
+    diceReferenceVisibleSheets: z.array(z.string()).default([]),
 
-    // 表情 COT 配置
+    // 琛ㄦ儏 COT 閰嶇疆
     emotionCotEnabled: z.boolean().default(true),
     emotionCotStripFromText: z.boolean().default(true),
     emotionConfigs: z
       .array(
         z
           .object({
-            tag: z.enum(EMOTION_TAGS).default('默认'),
+            tag: z.enum(EMOTION_TAGS).default('榛樿'),
             aliases: z.array(z.string()).default([]),
             ttsContext: z.string().default(''),
             live2dExpression: z.string().default(''),
@@ -118,10 +124,11 @@ const SettingsSchema = z
           .default({}),
       )
       .default([]),
-
-    // TTS 配置（参考 galgame 通用生成器的 tts 模块）
-    ttsProvider: z.enum(['littlewhitebox', 'gpt_sovits_v2']).default('littlewhitebox'),
+    // TTS provider
+    ttsProvider: z.enum(['littlewhitebox', 'gpt_sovits_v2', 'edge_tts_direct']).default('littlewhitebox'),
     ttsAutoPlay: z.boolean().default(true),
+    phoneMessageAutoRead: z.boolean().default(DEFAULTS.PHONE_MESSAGE_AUTO_READ),
+    baibaiPhoneMessageAutoRead: z.boolean().default(DEFAULTS.BAIBAI_PHONE_MESSAGE_AUTO_READ),
     ttsDefaultSpeaker: z.string().default(''),
     lipSyncManualParamsEnabled: z.boolean().default(false),
     lipSyncManualParamIds: z.array(z.string()).default([]),
@@ -165,12 +172,12 @@ const SettingsSchema = z
 
 export type Settings = z.infer<typeof SettingsSchema>;
 
-/** Pinia 设置 Store */
+/** Pinia 璁剧疆 Store */
 export const useSettingsStore = defineStore('desktop-pet-settings', () => {
   const raw = getVariables({ type: 'script', script_id: getScriptId() });
   const parsed = parseSettings(raw);
 
-  // 迁移旧的 Eikanya CDN 模型路径到新的 CDN
+  // 杩佺Щ鏃х殑 Eikanya CDN 妯″瀷璺緞鍒版柊鐨?CDN
   if (
     parsed.modelPath.includes('live2d-widget-model/') ||
     parsed.modelPath.includes('Live2D/Samples/')
@@ -178,24 +185,33 @@ export const useSettingsStore = defineStore('desktop-pet-settings', () => {
     parsed.modelPath = DEFAULTS.MODEL_PATH;
   }
 
-  // jsDelivr / raw 都支持；加载失败时会在 Live2DManager 内部自动尝试镜像地址
-  // 补齐表情配置（按固定列表）
+  // jsDelivr / raw 閮芥敮鎸侊紱鍔犺浇澶辫触鏃朵細鍦?Live2DManager 鍐呴儴鑷姩灏濊瘯闀滃儚鍦板潃
+  // 琛ラ綈琛ㄦ儏閰嶇疆锛堟寜鍥哄畾鍒楄〃锛?
   parsed.emotionConfigs = normalizeEmotionConfigs(parsed.emotionConfigs);
+
+  // 鍏煎鏃х増鈥滄皵娉¤嚜鍔ㄥ叧闂椂闂粹€濇绉掓暟鍊硷紙> 600 瑙嗕负姣锛夛紝缁熶竴杩佺Щ涓虹
+  const rawBubbleDuration = Number((parsed as any).bubbleDuration);
+  if (Number.isFinite(rawBubbleDuration)) {
+    const bubbleDurationSeconds = rawBubbleDuration > 600 ? rawBubbleDuration / 1000 : rawBubbleDuration;
+    (parsed as any).bubbleDuration = Math.round(Math.max(-1, Math.min(600, bubbleDurationSeconds)));
+  } else {
+    (parsed as any).bubbleDuration = DEFAULTS.BUBBLE_DURATION;
+  }
 
   const settings = ref<Settings>(parsed);
 
-  // 自动持久化到脚本变量
+  // 鑷姩鎸佷箙鍖栧埌鑴氭湰鍙橀噺
   watchEffect(() => {
     replaceVariables(klona(settings.value), { type: 'script', script_id: getScriptId() });
   });
 
-  /** 更新部分设置 */
+  /** 鏇存柊閮ㄥ垎璁剧疆 */
   function updateSettings(partial: Partial<Settings>) {
     settings.value = SettingsSchema.parse({ ...klona(settings.value), ...partial });
     settings.value.emotionConfigs = normalizeEmotionConfigs(settings.value.emotionConfigs);
   }
 
-  /** 重置为默认值 */
+  /** 閲嶇疆涓洪粯璁ゅ€?*/
   function resetSettings() {
     const next = SettingsSchema.parse({});
     next.emotionConfigs = normalizeEmotionConfigs(next.emotionConfigs);
@@ -204,3 +220,5 @@ export const useSettingsStore = defineStore('desktop-pet-settings', () => {
 
   return { settings, updateSettings, resetSettings };
 });
+
+

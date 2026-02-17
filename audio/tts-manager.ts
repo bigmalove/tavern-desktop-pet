@@ -1,4 +1,4 @@
-import { SCRIPT_NAME } from '../core/constants';
+﻿import { SCRIPT_NAME } from '../core/constants';
 import { useSettingsStore } from '../core/settings';
 import { Live2DManager } from '../live2d/manager';
 import { LipSyncManager } from '../live2d/lip-sync';
@@ -12,10 +12,11 @@ import {
   normalizeGptSoVitsSwitchMode,
   type TTSSpeakerVoice,
 } from './tts-config';
+import { synthesizeToBlob } from './edge-tts-direct';
 
 // ============================================
-// TTS 管理器 (LittleWhiteBox / GPT-SoVITS)
-// 完全参考: galgame通用生成器/src/audio/tts-manager.js
+// TTS 管理器 (LittleWhiteBox / GPT-SoVITS / EdgeTTS Direct)
+// 参考: galgame通用生成器 src/audio/tts-manager.js
 // ============================================
 
 export type TTSSegment = {
@@ -114,6 +115,9 @@ export const TTSManager = {
   _gptSoVitsWeightSwitchWarned: false,
   _gptSoVitsProxyWarned: false,
   _gptSoVitsFetchController: null as AbortController | null,
+  _edgeDirectFetchController: null as AbortController | null,
+  _edgeDirectSocket: null as WebSocket | null,
+  _edgeDirectObjectUrl: '' as string,
 
   _refreshProviderState(): boolean {
     const provider = getTTSProvider();
@@ -149,11 +153,17 @@ export const TTSManager = {
       return true;
     }
 
+    if (provider === TTS_PROVIDER.EDGE_TTS_DIRECT) {
+      this.enabled = true;
+      return true;
+    }
+
     this.enabled = true;
     return true;
   },
 
   _onPlaybackEnded(reason = 'unknown'): void {
+    this._cleanupEdgeDirectResources();
     console.log(`[${SCRIPT_NAME}] TTS: 播放结束 - reason=${reason}`);
     this.isPlaying = false;
     this.isLoading = false;
@@ -208,10 +218,48 @@ export const TTSManager = {
     }
   },
 
+  _cleanupEdgeDirectResources(): void {
+    if (this._edgeDirectFetchController) {
+      try {
+        this._edgeDirectFetchController.abort('cleanup');
+      } catch {
+        // ignore
+      }
+      this._edgeDirectFetchController = null;
+    }
+
+    if (this._edgeDirectSocket) {
+      try {
+        this._edgeDirectSocket.close(1000, 'cleanup');
+      } catch {
+        // ignore
+      }
+      this._edgeDirectSocket = null;
+    }
+
+    if (this._edgeDirectObjectUrl) {
+      try {
+        URL.revokeObjectURL(this._edgeDirectObjectUrl);
+      } catch {
+        // ignore
+      }
+      this._edgeDirectObjectUrl = '';
+    }
+  },
+
   stop(): void {
-    if (!this.isPlaying && !this.isLoading) return;
+    if (
+      !this.isPlaying &&
+      !this.isLoading &&
+      !this._edgeDirectSocket &&
+      !this._edgeDirectFetchController &&
+      !this._edgeDirectObjectUrl
+    ) {
+      return;
+    }
 
     this._abortGptSoVitsFetch('stop');
+    this._cleanupEdgeDirectResources();
     console.log(`[${SCRIPT_NAME}] TTS: 中止当前播放`);
 
     try {
@@ -330,7 +378,7 @@ export const TTSManager = {
     if (!route) return;
     if (this._gptSoVitsResolvedProxyRoute !== route) {
       this._gptSoVitsResolvedProxyRoute = route;
-      console.log(`[${SCRIPT_NAME}] GPT-SoVITS 代理路由已锁定: ${route} -> ${clipText(url, 96)}`);
+      console.log(`[${SCRIPT_NAME}] GPT-SoVITS 浠ｇ悊璺敱宸查攣瀹? ${route} -> ${clipText(url, 96)}`);
     }
   },
 
@@ -587,7 +635,7 @@ export const TTSManager = {
       } catch (e) {
         if (!this._gptSoVitsWeightSwitchWarned) {
           this._gptSoVitsWeightSwitchWarned = true;
-          showToast('GPT-SoVITS 切换权重失败，请检查 /proxy 与 set_* 接口');
+          showToast('GPT-SoVITS 切换权重失败，请检查 /proxy 下 set_* 接口');
         }
         console.warn(`[${SCRIPT_NAME}] GPT-SoVITS: set_weights 失败`, e);
         return false;
@@ -638,7 +686,7 @@ export const TTSManager = {
         this._gptSoVitsProxyWarned = true;
         showToast('GPT-SoVITS 代理失败，请检查 /proxy 路由和 CORS 设置');
       } else {
-        showToast('GPT-SoVITS 播放失败（检查地址/代理/CORS）');
+        showToast('GPT-SoVITS 播放失败（请检查地址/代理/CORS）');
       }
       onEnded();
     };
@@ -659,10 +707,98 @@ export const TTSManager = {
 
     if (hasLive2D()) {
       const lipId = segment.speaker || 'pet';
-      console.log(`[${SCRIPT_NAME}] TTS: 检查口型同步 - hasLive2D=true, speaker=${lipId}`);
+      console.log(`[${SCRIPT_NAME}] TTS: 检查口型同步: hasLive2D=true, speaker=${lipId}`);
       this._startLipSyncOnPlay(lipId);
     } else {
       console.log(`[${SCRIPT_NAME}] TTS: Live2D 未就绪，跳过口型同步`);
+    }
+
+    return true;
+  },
+
+  async _speakWithEdgeDirect(segment: TTSSegment, segmentId: string, resolvedVoice: TTSSpeakerVoice): Promise<boolean> {
+    const voiceName = String(resolvedVoice.value || resolvedVoice.name || '').trim();
+    if (!voiceName) {
+      showToast('EdgeTTS 直连：无可用音色');
+      return false;
+    }
+
+    this._cleanupEdgeDirectResources();
+
+    const controller = new AbortController();
+    this._edgeDirectFetchController = controller;
+
+    let blob: Blob;
+    try {
+      blob = await synthesizeToBlob(segment.text, resolvedVoice, {
+        signal: controller.signal,
+        onSocket: socket => {
+          this._edgeDirectSocket = socket;
+        },
+      });
+    } catch (e: any) {
+      const isAbort = e?.name === 'AbortError';
+      if (!isAbort) {
+        const reason = clipText(e?.message || String(e), 180);
+        const blockedHint = /likely-cause=ua-not-edg/i.test(reason)
+          ? '（当前浏览器不是 Edge，微软接口通常会拒绝握手；请改用 Edge 浏览器重试）'
+          : /1006|403|websocket/i.test(reason)
+            ? '（可能是浏览器 CSP/网络策略拦截了 wss 连接；也可切换 Edge 浏览器复测）'
+            : '';
+        console.warn(`[${SCRIPT_NAME}] EdgeTTS 直连合成失败:`, e);
+        showToast(`EdgeTTS 直连失败：${reason}${blockedHint}`);
+      }
+      return false;
+    } finally {
+      if (this._edgeDirectFetchController === controller) {
+        this._edgeDirectFetchController = null;
+      }
+      this._edgeDirectSocket = null;
+    }
+
+    if (!blob || blob.size <= 0) {
+      showToast('EdgeTTS 直连未返回音频数据');
+      return false;
+    }
+
+    const objectUrl = URL.createObjectURL(blob);
+    this._edgeDirectObjectUrl = objectUrl;
+
+    const audio = new Audio();
+    audio.crossOrigin = 'anonymous';
+    audio.src = objectUrl;
+
+    this.currentAudio = audio;
+    this.currentSegmentId = segmentId;
+
+    const onEnded = () => {
+      if (this.currentAudio === audio) {
+        this._onPlaybackEnded('edge_direct_audio_ended');
+      }
+    };
+    const onError = (err: any) => {
+      console.warn(`[${SCRIPT_NAME}] EdgeTTS 直连播放失败:`, err);
+      showToast('EdgeTTS 直连播放失败，可切换 Edge 浏览器复测');
+      onEnded();
+    };
+
+    audio.addEventListener('ended', onEnded, { once: true });
+    audio.addEventListener('error', onError, { once: true });
+
+    try {
+      await audio.play();
+    } catch (e) {
+      console.warn(`[${SCRIPT_NAME}] EdgeTTS 直连 play() 失败:`, e);
+      showToast('EdgeTTS 播放被浏览器拦截，请先进行一次页面交互');
+      onEnded();
+      return false;
+    }
+
+    this.isPlaying = true;
+
+    if (hasLive2D()) {
+      const lipId = segment.speaker || 'pet';
+      this._startLipSyncOnPlay(lipId);
     }
 
     return true;
@@ -846,6 +982,11 @@ export const TTSManager = {
 
       if (provider === TTS_PROVIDER.GPT_SOVITS_V2) {
         await this._speakWithGptSoVits(segment, segmentId, resolvedVoice);
+        return;
+      }
+
+      if (provider === TTS_PROVIDER.EDGE_TTS_DIRECT) {
+        await this._speakWithEdgeDirect(segment, segmentId, resolvedVoice);
         return;
       }
 

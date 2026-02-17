@@ -1,11 +1,6 @@
 ﻿<template>
   <div>
-    <div
-      v-if="visible"
-      class="settings-overlay dp-settings-overlay"
-      :style="overlayFallbackStyle"
-      @click.self="close"
-    >
+    <div v-if="visible" class="settings-overlay dp-settings-overlay" :style="overlayFallbackStyle" @click.self="close">
       <div class="settings-panel dp-settings-panel" :style="panelFallbackStyle">
         <div class="panel-header">
           <div class="header-title">
@@ -56,22 +51,17 @@
                     </option>
                   </select>
                 </div>
+
                 <div class="form-group">
                   <label>API URL</label>
-                  <input
-                    type="text"
-                    v-model="settings.apiConfig.url"
-                    placeholder="https://api.openai.com/v1"
-                  />
+                  <input type="text" v-model="settings.apiConfig.url" placeholder="https://api.openai.com/v1" />
                 </div>
+
                 <div class="form-group">
                   <label>API Key</label>
-                  <input
-                    type="password"
-                    v-model="settings.apiConfig.apiKey"
-                    placeholder="sk-..."
-                  />
+                  <input type="password" v-model="settings.apiConfig.apiKey" placeholder="sk-..." />
                 </div>
+
                 <div class="form-group">
                   <label>模型</label>
                   <div class="input-with-btn">
@@ -100,8 +90,8 @@
                   <button
                     class="btn btn-test"
                     type="button"
-                    @click="testConnection"
                     :disabled="!settings.apiConfig.url || testingConnection"
+                    @click="testConnection"
                   >
                     {{ testingConnection ? '测试中...' : '测试连接' }}
                   </button>
@@ -134,18 +124,12 @@
                   </div>
                   <div class="form-group half">
                     <label>Temperature ({{ temperatureLabel }})</label>
-                    <input
-                      type="range"
-                      v-model.number="settings.apiConfig.temperature"
-                      min="0"
-                      max="2"
-                      step="0.1"
-                    />
+                    <input type="range" v-model.number="settings.apiConfig.temperature" min="0" max="2" step="0.1" />
                   </div>
                 </div>
 
                 <div class="advanced-toggle" @click="showAdvanced = !showAdvanced">
-                  <span class="toggle-icon">{{ showAdvanced ? '▼' : '▶' }}</span>
+                  <span class="toggle-icon">{{ showAdvanced ? '▼' : '?' }}</span>
                   高级采样参数
                 </div>
 
@@ -172,16 +156,11 @@
                       />
                     </div>
                   </div>
+
                   <div class="form-row">
                     <div class="form-group half">
                       <label>Top P ({{ topPLabel }})</label>
-                      <input
-                        type="range"
-                        v-model.number="settings.apiConfig.top_p"
-                        min="0"
-                        max="1"
-                        step="0.01"
-                      />
+                      <input type="range" v-model.number="settings.apiConfig.top_p" min="0" max="1" step="0.01" />
                     </div>
                     <div class="form-group half">
                       <label>Top K</label>
@@ -200,7 +179,7 @@
               </h4>
 
               <div class="form-group">
-                <label>模型路径 / 远程 URL</label>
+                <label>模型路径</label>
                 <div class="input-with-btn">
                   <input
                     type="text"
@@ -227,21 +206,13 @@
                   >
                     {{ m.name }}
                   </button>
-                  <button class="model-btn browse-btn" type="button" @click="showBrowser = true">
-                    浏览在线模型库
-                  </button>
+                  <button class="model-btn browse-btn" type="button" @click="showBrowser = true">浏览在线模型库</button>
                 </div>
               </div>
 
               <div class="form-group">
                 <label>宠物缩放 ({{ petScaleLabel }})</label>
-                <input
-                  type="range"
-                  v-model.number="settings.petScale"
-                  min="0.1"
-                  max="3"
-                  step="0.05"
-                />
+                <input type="range" v-model.number="settings.petScale" min="0.1" max="3" step="0.05" />
               </div>
 
               <div class="form-group">
@@ -250,6 +221,22 @@
                   使用 CDN 加速（jsDelivr）
                 </label>
                 <div class="hint">关闭后将直接从 GitHub 原始地址加载，适用于 CDN 不可用时。</div>
+              </div>
+
+              <div class="form-group">
+                <label>
+                  <input type="checkbox" v-model="settings.doubleTapRandomMotionEnabled" />
+                  双击随机触发动作
+                </label>
+                <div class="hint">关闭后，双击仍会触发吐槽，但不再追加随机动作。</div>
+              </div>
+
+              <div class="form-group">
+                <label>
+                  <input type="checkbox" v-model="settings.gazeFollowMouseEnabled" />
+                  视线跟随鼠标
+                </label>
+                <div class="hint">全页面范围生效；仅响应鼠标/触控笔，触屏手势不会驱动视线。</div>
               </div>
             </section>
 
@@ -271,23 +258,25 @@
 
               <div class="form-group" v-if="settings.commentStyle === '自定义'">
                 <label>自定义提示词</label>
-                <textarea
-                  v-model="settings.customPrompt"
-                  rows="4"
-                  placeholder="输入自定义的系统提示词..."
-                ></textarea>
+                <textarea v-model="settings.customPrompt" rows="4" placeholder="输入自定义的系统提示词..."></textarea>
               </div>
 
               <div class="form-group">
                 <label>角色名（留空则关闭角色视角）</label>
-                <input
-                  type="text"
-                  v-model="settings.roleplayName"
-                  placeholder="例如：阿米娅"
-                />
-                <div class="hint">
-                  填写后，吐槽和手动聊天会以该角色视角发言。
-                </div>
+                <input type="text" v-model="settings.roleplayName" placeholder="例如：阿米娅" />
+                <div class="hint">填写后，吐槽和手动聊天会以该角色视角发言。</div>
+              </div>
+
+              <div class="form-group">
+                <label>
+                  <input
+                    type="checkbox"
+                    v-model="settings.roleplayIgnoreCommentStyle"
+                    :disabled="!settings.roleplayName.trim()"
+                  />
+                  角色模式下忽略吐槽风格
+                </label>
+                <div class="hint">开启后将不再套用风格提示词，仅按角色设定发言。</div>
               </div>
 
               <div class="form-group">
@@ -299,9 +288,7 @@
                   />
                   发送角色卡内容（当前聊天角色）
                 </label>
-                <div class="hint">
-                  开启后会附带当前角色卡的描述/性格/场景等内容，帮助贴合人设。
-                </div>
+                <div class="hint">开启后会附带当前角色卡描述/性格/场景等内容。</div>
               </div>
 
               <div class="form-group">
@@ -315,55 +302,102 @@
                 <div class="form-group">
                   <label>触发时机</label>
                   <select v-model="settings.commentTriggerMode">
-                    <option
-                      v-for="option in commentTriggerModeOptions"
-                      :key="option.value"
-                      :value="option.value"
-                    >
+                    <option v-for="option in commentTriggerModeOptions" :key="option.value" :value="option.value">
                       {{ option.label }}
                     </option>
                   </select>
                 </div>
+
                 <div class="form-row">
                   <div class="form-group half">
                     <label>触发间隔（每 N 条消息）</label>
-                    <input
-                      type="number"
-                      v-model.number="settings.triggerInterval"
-                      min="1"
-                      max="100"
-                    />
+                    <input type="number" v-model.number="settings.triggerInterval" min="1" max="100" />
                   </div>
                   <div class="form-group half">
-                    <label>触发概率 ({{ settings.triggerProbability }}%)</label>
-                    <input
-                      type="range"
-                      v-model.number="settings.triggerProbability"
-                      min="0"
-                      max="100"
-                    />
+                    <label>触发概率（{{ settings.triggerProbability }}%）</label>
+                    <input type="range" v-model.number="settings.triggerProbability" min="0" max="100" />
                   </div>
                 </div>
               </template>
 
               <div class="form-group">
                 <label>传给 LLM 的最近聊天条数</label>
-                <input
-                  type="number"
-                  v-model.number="settings.maxChatContext"
-                  min="1"
-                  max="50"
-                />
+                <input type="number" v-model.number="settings.maxChatContext" min="1" max="50" />
+              </div>
+
+              <div class="form-group">
+                <label>气泡自动关闭时间（秒）</label>
+                <input type="number" v-model.number="settings.bubbleDuration" min="-1" max="600" step="1" />
+                <div class="hint">默认 -1 不自动关闭；设置为 0 表示生成完成后立即关闭。</div>
+              </div>
+
+              <div class="form-group">
+                <label>
+                  <input type="checkbox" v-model="settings.phoneMessageAutoRead" />
+                  读【毛球点心铺】手机消息
+                </label>
+                <div class="hint">仅朗读 NPC 文本回复；需同时启用 TTS 配音与自动播放。</div>
+              </div>
+
+              <div class="form-group">
+                <label>
+                  <input type="checkbox" v-model="settings.baibaiPhoneMessageAutoRead" />
+                  读【柏柏小手机】手机消息
+                </label>
+                <div class="hint">仅朗读 NPC 文本回复；需同时启用 TTS 配音与自动播放。</div>
               </div>
 
               <div class="form-group">
                 <label>
                   <input type="checkbox" v-model="settings.useTamakoTodaySpecial" />
-                  兼容 Tamako Market：读取“今日特选”参与点评
+                  兼容 Tamako 今日特选
                 </label>
-                <div class="hint">
-                  开启后会优先读取 Tamako Market（玉子市场）“今日特选”内容作为最新点评上下文；读取失败时自动回退到聊天记录。
+                <div class="hint">开启后会优先读取 Tamako Market 今日特选作为上下文。</div>
+              </div>
+
+              <div class="form-group">
+                <label>
+                  <input type="checkbox" v-model="settings.useDiceDatabaseReference" />
+                  参考数据库（建议 + 点评）
+                </label>
+                <div class="hint">启用后会读取骰子数据库摘要作为参考内容。</div>
+              </div>
+
+              <div class="form-group" v-if="settings.useDiceDatabaseReference">
+                <label>可见数据库表（勾选后才会被引用）</label>
+
+                <div class="form-row">
+                  <div class="form-group half">
+                    <button
+                      class="btn btn-test"
+                      type="button"
+                      @click="refreshDiceReferenceSheetOptions"
+                      :disabled="refreshingDiceSheetOptions"
+                    >
+                      {{ refreshingDiceSheetOptions ? '刷新中...' : '刷新表列表' }}
+                    </button>
+                  </div>
+                  <div class="form-group half">
+                    <button class="btn btn-secondary" type="button" @click="selectAllDiceReferenceSheets">全选</button>
+                  </div>
                 </div>
+
+                <div class="form-group">
+                  <button class="btn btn-secondary" type="button" @click="clearDiceReferenceSheets">清空筛选</button>
+                  <div class="hint">{{ diceReferenceSheetSummary }}</div>
+                </div>
+
+                <div class="dice-sheet-list" v-if="diceReferenceSheetOptions.length > 0">
+                  <label class="dice-sheet-item" v-for="sheetName in diceReferenceSheetOptions" :key="sheetName">
+                    <input
+                      type="checkbox"
+                      :checked="isDiceSheetVisible(sheetName)"
+                      @change="onToggleDiceSheetVisibility(sheetName, $event)"
+                    />
+                    <span>{{ sheetName }}</span>
+                  </label>
+                </div>
+                <div class="hint" v-else>未读取到表名，可先在骰子系统中完成一次数据库更新后再刷新。</div>
               </div>
             </section>
 
@@ -379,10 +413,10 @@
                   <div class="form-group">
                     <label>
                       <input type="checkbox" v-model="settings.emotionCotEnabled" />
-                      启用表情 COT 输出
+                      启用表情 COT
                     </label>
                     <div class="hint">
-                      开启后，LLM 将按 <code>桌面宠物[表情|语气]: 正文</code> 输出；气泡/TTS 会自动剥离前缀，并联动 Live2D 表情/动作。
+                      开启后，LLM 将按 <code>桌面宠物[表情|语气]: 正文</code> 输出；气泡/TTS 会自动剥离前缀并联动 Live2D。
                     </div>
                     <div class="hint">表情列表：{{ emotionTags.join('、') }}</div>
                   </div>
@@ -397,9 +431,7 @@
 
                   <div class="form-row">
                     <div class="form-group half">
-                      <button class="btn btn-secondary" type="button" @click="resetEmotionConfigs">
-                        重置为默认表情配置
-                      </button>
+                      <button class="btn btn-secondary" type="button" @click="resetEmotionConfigs">重置为默认表情配置</button>
                     </div>
                     <div class="form-group half">
                       <button
@@ -427,15 +459,13 @@
                   </div>
 
                   <div class="form-group">
-                    <button class="btn btn-secondary" type="button" @click="clearLive2DOverrides">
-                      清空 Live2D 覆盖
-                    </button>
+                    <button class="btn btn-secondary" type="button" @click="clearLive2DOverrides">清空 Live2D 覆盖</button>
                     <div class="hint">{{ live2dListSummary }}</div>
                   </div>
 
                   <div class="form-group">
                     <div class="advanced-toggle" @click="showEmotionAdvanced = !showEmotionAdvanced">
-                      <span class="toggle-icon">{{ showEmotionAdvanced ? '▼' : '▶' }}</span>
+                      <span class="toggle-icon">{{ showEmotionAdvanced ? '▼' : '?' }}</span>
                       <span>{{ showEmotionAdvanced ? '隐藏高级选项' : '显示高级选项' }}</span>
                     </div>
                     <div class="hint">高级选项包含：别名映射、TTS 默认语气、动作启用开关。</div>
@@ -453,6 +483,7 @@
                     <div v-for="cfg in settings.emotionConfigs" :key="cfg.tag" class="emotion-map-row">
                       <div class="emotion-map-tag">{{ cfg.tag }}</div>
                       <div class="emotion-map-arrow">→</div>
+
                       <select v-model="cfg.live2dExpression">
                         <option value="">（自动匹配）</option>
                         <option
@@ -465,6 +496,7 @@
                           {{ expr }}
                         </option>
                       </select>
+
                       <select v-model="cfg.live2dMotion.group" :disabled="!cfg.live2dMotion.enabled">
                         <option value="">（自动匹配）</option>
                         <option
@@ -477,19 +509,19 @@
                           {{ opt.label }}
                         </option>
                       </select>
+
                       <button class="btn btn-secondary emotion-map-preview-btn" type="button" @click="previewEmotion(cfg.tag)">
-                        ▶
+                        ?
                       </button>
                     </div>
                   </div>
 
-                  <div class="hint">
-                    左列绑定模型 Expressions，右列绑定模型 Motions（可填动作名或动作组名）。
-                  </div>
+                  <div class="hint">左列绑定 Expressions，右列绑定 Motions（可填动作名或动作组名）。</div>
 
                   <div class="emotion-advanced-list" v-if="showEmotionAdvanced">
                     <div v-for="cfg in settings.emotionConfigs" :key="`advanced_${cfg.tag}`" class="emotion-advanced-item">
                       <div class="emotion-advanced-title">{{ cfg.tag }} · 高级</div>
+
                       <div class="form-row">
                         <div class="form-group half">
                           <label>别名（raw tag → 规范表情）</label>
@@ -499,14 +531,16 @@
                             @blur="onAliasesBlur(cfg, $event)"
                             placeholder="逗号分隔，例如：开心, smile"
                           />
-                          <div class="hint">当模型输出不在固定表情列表时，可用别名映射到本行的规范表情。</div>
+                          <div class="hint">当模型输出不在固定表情列表时，可用别名映射到本行规范表情。</div>
                         </div>
+
                         <div class="form-group half">
                           <label>TTS 默认语气（可选）</label>
                           <input type="text" v-model="cfg.ttsContext" placeholder="例如：轻松调侃地说" />
                           <div class="hint">当模型未输出 |语气 时，将把此处作为 contextTexts 传给 TTS。</div>
                         </div>
                       </div>
+
                       <div class="form-group">
                         <label>
                           <input type="checkbox" v-model="cfg.live2dMotion.enabled" />
@@ -515,7 +549,6 @@
                       </div>
                     </div>
                   </div>
-
                 </div>
 
                 <div class="emotion-preview-panel">
@@ -543,16 +576,14 @@
                       />
                       <span class="zoom-value">{{ Math.round(previewZoomFactor * 100) }}%</span>
                     </div>
+
                     <div class="emotion-preview-actions">
-                      <button class="btn btn-secondary" type="button" @click="resetPreviewViewport">
-                        重置视图
-                      </button>
-                      <button class="btn btn-secondary" type="button" @click="replayPreview">
-                        重播
-                      </button>
+                      <button class="btn btn-secondary" type="button" @click="resetPreviewViewport">重置视图</button>
+                      <button class="btn btn-secondary" type="button" @click="replayPreview">重播</button>
                     </div>
+
                     <div class="hint">提示：拖拽预览区可移动模型，滚轮可缩放。</div>
-                    <div class="hint">{{ previewStatus }}</div>
+                    <div class="hint" :title="previewStatus">{{ previewStatus }}</div>
                   </div>
                 </div>
               </div>
@@ -578,6 +609,7 @@
                 <select v-model="settings.ttsProvider">
                   <option :value="TTS_PROVIDER.LITTLEWHITEBOX">小白X（豆包火山）</option>
                   <option :value="TTS_PROVIDER.GPT_SOVITS_V2">GPT-SoVITS v2ProPlus</option>
+                  <option :value="TTS_PROVIDER.EDGE_TTS_DIRECT">EdgeTTS（必须是Edge浏览器）</option>
                 </select>
               </div>
 
@@ -586,6 +618,22 @@
                   <input type="checkbox" v-model="settings.ttsAutoPlay" />
                   自动播放（吐槽完成后朗读）
                 </label>
+              </div>
+
+              <div class="form-group">
+                <label>
+                  <input type="checkbox" v-model="settings.phoneMessageAutoRead" />
+                  手机消息自动朗读（仅 NPC 文本回复）
+                </label>
+                <div class="hint">仅朗读 sender=contact 且 type=text 的手机消息。</div>
+              </div>
+
+              <div class="form-group">
+                <label>
+                  <input type="checkbox" v-model="settings.baibaiPhoneMessageAutoRead" />
+                  柏柏小手机自动朗读（仅 NPC 文本回复）
+                </label>
+                <div class="hint">仅朗读 qq.private / qq.group 中的 NPC 文本消息。</div>
               </div>
 
               <div class="form-group">
@@ -605,7 +653,7 @@
               </div>
 
               <div class="advanced-toggle" @click="showLipSyncAdvanced = !showLipSyncAdvanced">
-                <span class="toggle-icon">{{ showLipSyncAdvanced ? '▼' : '▶' }}</span>
+                <span class="toggle-icon">{{ showLipSyncAdvanced ? '▼' : '?' }}</span>
                 口型同步高级兜底
               </div>
 
@@ -632,7 +680,7 @@
 
               <div v-if="settings.ttsProvider === TTS_PROVIDER.GPT_SOVITS_V2" class="advanced-params">
                 <div class="form-group">
-                  <label>GPT-SoVITS（api_v2.py）API 地址</label>
+                  <label>API 地址</label>
                   <input type="text" v-model="settings.gptSoVits.apiUrl" placeholder="http://127.0.0.1:9880" />
                 </div>
 
@@ -685,34 +733,23 @@
                   ></textarea>
                   <div class="form-row">
                     <div class="form-group half">
-                      <button class="btn btn-secondary" type="button" @click="saveGptSoVitsVoices">
-                        保存音色列表
-                      </button>
+                      <button class="btn btn-secondary" type="button" @click="saveGptSoVitsVoices">保存音色列表</button>
                     </div>
                     <div class="form-group half">
-                      <button class="btn btn-test" type="button" @click="testTts" :disabled="!ttsEnabled">
-                        试听
-                      </button>
+                      <button class="btn btn-test" type="button" @click="testTts" :disabled="!ttsEnabled">试听</button>
                     </div>
                   </div>
-                  <input
-                    type="text"
-                    v-model="ttsTestText"
-                    placeholder="试听文本"
-                  />
+                  <input type="text" v-model="ttsTestText" placeholder="试听文本" />
                 </div>
               </div>
 
               <div v-else class="form-group">
-                <button class="btn btn-test" type="button" @click="testTts" :disabled="!ttsEnabled">
-                  试听
-                </button>
+                <button class="btn btn-test" type="button" @click="testTts" :disabled="!ttsEnabled">试听</button>
+                <input type="text" v-model="ttsTestText" placeholder="试听文本" />
               </div>
 
               <div class="form-group">
-                <button class="btn btn-secondary" type="button" @click="stopTts">
-                  停止
-                </button>
+                <button class="btn btn-secondary" type="button" @click="stopTts">停止</button>
               </div>
             </section>
 
@@ -741,9 +778,7 @@
                   <li>
                     本插件加载或展示的 Live2D 模型及配套素材，其版权归原作者或原项目方所有；请在使用前自行确认并遵守对应授权条款。
                   </li>
-                  <li>
-                    除权利人另行授权外，Live2D 模型仅供学习、研究与交流，不得用于商业用途或再分发。
-                  </li>
+                  <li>除权利人另有授权外，插件及示例素材仅用于学习、研究与交流，不得用于商业用途或再分发。</li>
                   <li>
                     本项目采用
                     <a
@@ -756,9 +791,7 @@
                     </a>
                     共享协议。使用、改编与传播时请遵守“署名-非商业性使用-相同方式共享”，并对第三方素材单独核验授权。
                   </li>
-                  <li>
-                    使用本插件及其衍生内容时，必须遵守你所在地及适用司法辖区的法律法规；任何违反法律法规的使用行为与后果均由使用者自行承担。
-                  </li>
+                  <li>使用本插件及其衍生内容时，必须遵守你所在地及适用司法辖区的法律法规。</li>
                 </ul>
               </div>
             </section>
@@ -781,14 +814,10 @@
       <div class="browser-dialog dp-browser-dialog" :style="panelFallbackStyle">
         <div class="browser-dialog-header">
           <h3>在线模型库</h3>
-          <button class="close-btn" type="button" @click="showBrowser = false">✕</button>
+          <button class="close-btn" type="button" @click="showBrowser = false">X</button>
         </div>
         <div class="browser-dialog-body">
-          <ModelBrowser
-            :use-cdn="settings.useCdn"
-            @cancel="showBrowser = false"
-            @load-model="onBrowserLoad"
-          />
+          <ModelBrowser :use-cdn="settings.useCdn" @cancel="showBrowser = false" @load-model="onBrowserLoad" />
         </div>
       </div>
     </div>
@@ -896,6 +925,15 @@ function ensureNumericSettingsIntegrity(): void {
   api.sendWorldInfo = api.sendWorldInfo === true;
 
   settings.value.petScale = toBoundedNumber(settings.value.petScale, DEFAULTS.PET_SCALE, 0.1, 3);
+  const rawBubbleDuration =
+    typeof settings.value.bubbleDuration === 'number'
+      ? settings.value.bubbleDuration
+      : Number(settings.value.bubbleDuration ?? Number.NaN);
+  const bubbleDurationSeconds =
+    Number.isFinite(rawBubbleDuration) && rawBubbleDuration > 600 ? rawBubbleDuration / 1000 : rawBubbleDuration;
+  settings.value.bubbleDuration = Math.round(
+    toBoundedNumber(bubbleDurationSeconds, DEFAULTS.BUBBLE_DURATION, -1, 600),
+  );
 }
 
 const temperatureLabel = computed(() =>
@@ -907,12 +945,8 @@ const frequencyPenaltyLabel = computed(() =>
 const presencePenaltyLabel = computed(() =>
   toBoundedNumber(settings.value.apiConfig?.presence_penalty, DEFAULTS.PRESENCE_PENALTY, -2, 2).toFixed(1),
 );
-const topPLabel = computed(() =>
-  toBoundedNumber(settings.value.apiConfig?.top_p, DEFAULTS.TOP_P, 0, 1).toFixed(2),
-);
-const petScaleLabel = computed(() =>
-  toBoundedNumber(settings.value.petScale, DEFAULTS.PET_SCALE, 0.1, 3).toFixed(2),
-);
+const topPLabel = computed(() => toBoundedNumber(settings.value.apiConfig?.top_p, DEFAULTS.TOP_P, 0, 1).toFixed(2));
+const petScaleLabel = computed(() => toBoundedNumber(settings.value.petScale, DEFAULTS.PET_SCALE, 0.1, 3).toFixed(2));
 
 ensureNumericSettingsIntegrity();
 
@@ -922,6 +956,231 @@ const commentTriggerModeOptions = COMMENT_TRIGGER_MODE_OPTIONS;
 const apiSources = API_SOURCES;
 const showBrowser = ref(false);
 const customModelUrl = ref(settings.value.modelPath || '');
+
+const diceReferenceSheetOptions = ref<string[]>([]);
+const refreshingDiceSheetOptions = ref(false);
+
+function normalizeDiceReferenceSheetName(value: unknown): string {
+  return String(value ?? '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\r\n/g, '\n')
+    .replace(/\n+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function dedupeDiceReferenceSheetNames(values: string[]): string[] {
+  const seen = new Set<string>();
+  const list: string[] = [];
+  for (const value of values) {
+    const name = normalizeDiceReferenceSheetName(value);
+    if (!name) continue;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    list.push(name);
+  }
+  return list;
+}
+
+function parseDiceReferenceRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text) return null;
+    try {
+      return parseDiceReferenceRecord(JSON.parse(text));
+    } catch {
+      return null;
+    }
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function isDiceReferencePayload(record: Record<string, unknown>): boolean {
+  return Object.keys(record).some(key => key.startsWith('sheet_'));
+}
+
+function extractDiceReferenceSheetNamesFromPayload(payload: unknown): string[] {
+  const record = parseDiceReferenceRecord(payload);
+  if (!record) return [];
+
+  let tableRecord: Record<string, unknown> | null = record;
+  if (!isDiceReferencePayload(tableRecord)) {
+    const nested = parseDiceReferenceRecord(tableRecord.independentData);
+    if (!nested || !isDiceReferencePayload(nested)) {
+      return [];
+    }
+    tableRecord = nested;
+  }
+
+  return dedupeDiceReferenceSheetNames(
+    Object.keys(tableRecord)
+      .filter(key => key.startsWith('sheet_'))
+      .map(key => {
+        const sheet = parseDiceReferenceRecord(tableRecord?.[key]);
+        return sheet?.name ?? '';
+      }),
+  );
+}
+
+function pickDiceReferencePayloadFromIsolatedData(value: unknown): Record<string, unknown> | null {
+  const isolated = parseDiceReferenceRecord(value);
+  if (!isolated) return null;
+
+  const keys = Object.keys(isolated);
+  for (let i = keys.length - 1; i >= 0; i--) {
+    const slot = parseDiceReferenceRecord(isolated[keys[i]]);
+    if (!slot) continue;
+    const payload = parseDiceReferenceRecord(slot.independentData);
+    if (payload && isDiceReferencePayload(payload)) {
+      return payload;
+    }
+  }
+  return null;
+}
+
+function pickDiceReferencePayloadFromMessage(message: any): Record<string, unknown> | null {
+  if (!message || typeof message !== 'object') return null;
+
+  const directCandidates: unknown[] = [
+    message.TavernDB_ACU_IndependentData,
+    message.TavernDB_ACU_Data,
+    message.TavernDB_ACU_SummaryData,
+    message.data?.TavernDB_ACU_IndependentData,
+    message.data?.TavernDB_ACU_Data,
+    message.data?.TavernDB_ACU_SummaryData,
+  ];
+  for (const candidate of directCandidates) {
+    const payload = parseDiceReferenceRecord(candidate);
+    if (!payload) continue;
+    if (isDiceReferencePayload(payload)) {
+      return payload;
+    }
+    const nested = parseDiceReferenceRecord(payload.independentData);
+    if (nested && isDiceReferencePayload(nested)) {
+      return nested;
+    }
+  }
+
+  const isolatedCandidates = [message.TavernDB_ACU_IsolatedData, message.data?.TavernDB_ACU_IsolatedData];
+  for (const candidate of isolatedCandidates) {
+    const payload = pickDiceReferencePayloadFromIsolatedData(candidate);
+    if (payload) return payload;
+  }
+
+  return null;
+}
+
+function readDiceReferenceSheetNamesFromApi(): string[] {
+  try {
+    const topWindow = window.parent ?? window;
+    const api = (topWindow as any)?.AutoCardUpdaterAPI;
+    if (!api || typeof api.exportTableAsJson !== 'function') {
+      return [];
+    }
+    return extractDiceReferenceSheetNamesFromPayload(api.exportTableAsJson());
+  } catch {
+    return [];
+  }
+}
+
+function readDiceReferenceSheetNamesFromChat(): string[] {
+  try {
+    const messages = getChatMessages(`0-{{lastMessageId}}`, {
+      role: 'all',
+      hide_state: 'all',
+    });
+    const list = Array.isArray(messages) ? messages : [];
+    for (let i = list.length - 1; i >= 0; i--) {
+      const payload = pickDiceReferencePayloadFromMessage(list[i] as any);
+      if (!payload) continue;
+      const names = extractDiceReferenceSheetNamesFromPayload(payload);
+      if (names.length > 0) return names;
+    }
+  } catch {
+    // ignore
+  }
+  return [];
+}
+
+function getDiceReferenceSelectedSheets(): string[] {
+  const raw = Array.isArray((settings.value as any).diceReferenceVisibleSheets)
+    ? ((settings.value as any).diceReferenceVisibleSheets as unknown[])
+    : [];
+  return dedupeDiceReferenceSheetNames(raw.map(item => String(item ?? '')));
+}
+
+function setDiceReferenceSelectedSheets(next: string[]): void {
+  (settings.value as any).diceReferenceVisibleSheets = dedupeDiceReferenceSheetNames(next);
+}
+
+function isDiceSheetVisible(sheetName: string): boolean {
+  const selected = getDiceReferenceSelectedSheets();
+  if (selected.length === 0) return true;
+  return selected.includes(sheetName);
+}
+
+function onToggleDiceSheetVisibility(sheetName: string, event: Event): void {
+  const target = event?.target as HTMLInputElement | null;
+  const checked = !!target?.checked;
+  const options = diceReferenceSheetOptions.value;
+  const current = getDiceReferenceSelectedSheets();
+  let next = current.length === 0 ? [...options] : [...current];
+
+  if (checked) {
+    if (!next.includes(sheetName)) {
+      next.push(sheetName);
+    }
+  } else {
+    next = next.filter(name => name !== sheetName);
+  }
+
+  // 空数组表示“全部可见”
+  if (options.length > 0 && next.length === options.length) {
+    next = [];
+  }
+  setDiceReferenceSelectedSheets(next);
+}
+
+const diceReferenceSheetSummary = computed(() => {
+  const optionsCount = diceReferenceSheetOptions.value.length;
+  const selected = getDiceReferenceSelectedSheets();
+  if (optionsCount <= 0) {
+    return '暂无可用表名。';
+  }
+  if (selected.length === 0) {
+    return `当前：全部可见（${optionsCount}/${optionsCount}）`;
+  }
+  return `当前：已勾选 ${selected.length}/${optionsCount}`;
+});
+
+function refreshDiceReferenceSheetOptions(): void {
+  refreshingDiceSheetOptions.value = true;
+  try {
+    const fromApi = readDiceReferenceSheetNamesFromApi();
+    const fromChat = fromApi.length > 0 ? [] : readDiceReferenceSheetNamesFromChat();
+    const selected = getDiceReferenceSelectedSheets();
+    diceReferenceSheetOptions.value = dedupeDiceReferenceSheetNames([
+      ...fromApi,
+      ...fromChat,
+      ...selected,
+    ]);
+  } finally {
+    refreshingDiceSheetOptions.value = false;
+  }
+}
+
+function selectAllDiceReferenceSheets(): void {
+  // 空数组表示“全部可见”
+  setDiceReferenceSelectedSheets([]);
+}
+
+function clearDiceReferenceSheets(): void {
+  // 空数组表示“全部可见”
+  setDiceReferenceSelectedSheets([]);
+}
 
 const ttsEnabled = ref(getTTSEnabled());
 const ttsVoiceList = ref<TTSSpeakerVoice[]>([]);
@@ -933,7 +1192,9 @@ const ttsVoiceHint = computed(() => {
   const providerHint =
     settings.value.ttsProvider === TTS_PROVIDER.GPT_SOVITS_V2
       ? 'GPT-SoVITS：建议把音色 name 设为角色名。'
-      : 'LittleWhiteBox：未指定/未绑定时使用此默认音色。';
+      : settings.value.ttsProvider === TTS_PROVIDER.EDGE_TTS_DIRECT
+        ? 'EdgeTTS（直连）：前端直连，不需要插件；失败时可切换 Edge 浏览器复测。'
+        : 'LittleWhiteBox：未指定/未绑定时使用此默认音色。';
   const emptyHint = ttsVoiceList.value.length === 0 ? '（当前音色列表为空）' : '';
   return `${providerHint}${emptyHint}`;
 });
@@ -1352,7 +1613,9 @@ function normalizeModelList(list: unknown): string[] {
 }
 
 async function getModelListByHttp(customApi: CustomApiModelConfig): Promise<string[]> {
-  const base = String(customApi.apiurl || '').trim().replace(/\/+$/, '');
+  const base = String(customApi.apiurl || '')
+    .trim()
+    .replace(/\/+$/, '');
   if (!base) throw new Error('API URL 为空');
 
   const headers: HeadersInit = { Accept: 'application/json' };
@@ -1506,7 +1769,7 @@ function refreshLive2DLists(): void {
   try {
     live2dExpressions.value = Live2DManager.getExpressions();
     live2dMotions.value = Live2DManager.getMotions()
-      .map((m) => ({ name: m.name, group: m.group, index: m.index }))
+      .map(m => ({ name: m.name, group: m.group, index: m.index }))
       .sort((a, b) => a.name.localeCompare(b.name));
     const groups = Live2DManager.getMotionGroups();
     live2dMotionGroups.value = Object.entries(groups)
@@ -1616,7 +1879,7 @@ async function previewEmotion(tag: EmotionTag): Promise<void> {
 
   applyPreviewViewport();
 
-  const cfg = (settings.value.emotionConfigs as any as EmotionConfig[]).find((c) => c.tag === tag);
+  const cfg = (settings.value.emotionConfigs as any as EmotionConfig[]).find(c => c.tag === tag);
   const expr = matchLive2DExpression(model, tag, cfg?.live2dExpression);
   if (expr) {
     Live2DManager.playExpression(expr);
@@ -1732,6 +1995,15 @@ async function testTts(): Promise<void> {
       voiceName = targetName;
       toastr.info(`已自动切换试听音色为：${targetName}`);
     }
+  } else if (settings.value.ttsProvider === TTS_PROVIDER.EDGE_TTS_DIRECT && !voiceName) {
+    const voices = ttsVoiceList.value.length > 0 ? ttsVoiceList.value : await getTTSVoiceListAsync();
+    const fallbackName = String(voices[0]?.name || voices[0]?.value || '').trim();
+    if (!fallbackName) {
+      toastr.error('当前无可用 EdgeTTS 音色，请先刷新音色列表');
+      return;
+    }
+    settings.value.ttsDefaultSpeaker = fallbackName;
+    voiceName = fallbackName;
   }
 
   try {
@@ -1772,7 +2044,7 @@ function close() {
 
 watch(
   () => props.visible,
-  (visible) => {
+  visible => {
     if (!visible) return;
     ensureNumericSettingsIntegrity();
     activeSection.value = 'api';
@@ -1787,6 +2059,7 @@ watch(
       gptSoVitsVoicesJson.value = '[]';
     }
     void refreshTtsVoices();
+    refreshDiceReferenceSheetOptions();
   },
   { immediate: true },
 );
@@ -1800,6 +2073,14 @@ watch(
       // ignore
     }
     void refreshTtsVoices();
+  },
+);
+
+watch(
+  () => settings.value.useDiceDatabaseReference,
+  enabled => {
+    if (!enabled) return;
+    refreshDiceReferenceSheetOptions();
   },
 );
 </script>
@@ -2061,6 +2342,29 @@ watch(
     flex: 1;
     min-width: 0;
   }
+}
+
+.dice-sheet-list {
+  margin-top: 6px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.dice-sheet-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 12px;
+  color: #e8e8e8;
+  line-height: 1.35;
+}
+
+.dice-sheet-item input[type='checkbox'] {
+  margin: 0;
 }
 
 .input-with-btn {
@@ -2480,10 +2784,7 @@ watch(
 @media (max-width: 860px) {
   .settings-overlay {
     align-items: flex-start;
-    padding:
-      calc(env(safe-area-inset-top) + 6px)
-      6px
-      calc(env(safe-area-inset-bottom) + 6px);
+    padding: calc(env(safe-area-inset-top) + 6px) 6px calc(env(safe-area-inset-bottom) + 6px);
   }
 
   .settings-panel {
@@ -2520,8 +2821,7 @@ watch(
     min-height: 42px;
     padding: 6px 10px;
     margin-bottom: 0;
-    grid-template-areas:
-      'idx label';
+    grid-template-areas: 'idx label';
     grid-template-columns: auto 1fr;
     row-gap: 0;
     align-items: center;
@@ -2545,10 +2845,7 @@ watch(
 
   .browser-overlay {
     align-items: flex-start;
-    padding:
-      calc(env(safe-area-inset-top) + 6px)
-      6px
-      calc(env(safe-area-inset-bottom) + 6px);
+    padding: calc(env(safe-area-inset-top) + 6px) 6px calc(env(safe-area-inset-bottom) + 6px);
   }
 
   .browser-dialog {

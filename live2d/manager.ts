@@ -1422,6 +1422,65 @@ export const Live2DManager = {
   },
 
   /**
+   * 根据窗口 client 坐标驱动视线跟随。
+   * 在不支持 focus 的模型上保持 no-op。
+   */
+  focusByClientPoint(clientX: number, clientY: number, immediate = false): void {
+    const model = this.model;
+    if (!model) return;
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
+
+    try {
+      if (typeof model.focus === 'function') {
+        model.focus(clientX, clientY, immediate);
+        return;
+      }
+    } catch {
+      return;
+    }
+
+    try {
+      const controller = model?.internalModel?.focusController;
+      if (!controller || typeof controller.focus !== 'function') return;
+
+      const rect = Live2DStage.container?.getBoundingClientRect?.();
+      if (!rect || rect.width <= 0 || rect.height <= 0) return;
+
+      const normalizedX = ((clientX - rect.left) / rect.width) * 2 - 1;
+      const normalizedY = ((clientY - rect.top) / rect.height) * 2 - 1;
+      controller.focus(
+        Math.max(-1, Math.min(1, normalizedX)),
+        Math.max(-1, Math.min(1, -normalizedY)),
+        immediate,
+      );
+    } catch {
+      // ignore
+    }
+  },
+
+  /**
+   * 将视线回正到舞台中心。
+   */
+  focusCenter(immediate = true): void {
+    const model = this.model;
+    if (!model) return;
+
+    const rect = Live2DStage.container?.getBoundingClientRect?.();
+    if (rect && rect.width > 0 && rect.height > 0) {
+      this.focusByClientPoint(rect.left + rect.width / 2, rect.top + rect.height / 2, immediate);
+      return;
+    }
+
+    try {
+      const controller = model?.internalModel?.focusController;
+      if (!controller || typeof controller.focus !== 'function') return;
+      controller.focus(0, 0, immediate);
+    } catch {
+      // ignore
+    }
+  },
+
+  /**
    * 设置口型开合（用于 TTS 口型同步）
    * - 完全参考 galgame 通用生成器的 Live2DManager.setMouthOpen
    * - 桌面宠物仅有一个 model，因此忽略 characterId 参数

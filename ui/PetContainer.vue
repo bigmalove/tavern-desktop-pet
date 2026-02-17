@@ -1,6 +1,11 @@
 <template>
   <div>
-    <ChatBubble :text="bubbleText" :is-done="bubbleDone" @hidden="onBubbleHidden" />
+    <ChatBubble
+      :text="bubbleText"
+      :is-done="bubbleDone"
+      :auto-close-delay-seconds="settings.bubbleDuration"
+      @hidden="onBubbleHidden"
+    />
     <SettingsPanel
       :visible="showSettings"
       @close="uiStore.closeSettings()"
@@ -81,11 +86,63 @@ let statusCheckTimer: number | null = null;
 let viewportResizeSyncTimer: number | null = null;
 let boundWindowResizeHandler: (() => void) | null = null;
 let boundVisualViewportResizeHandler: (() => void) | null = null;
+let gazeFollowBound = false;
+let gazePointerMoveHandler: ((event: PointerEvent) => void) | null = null;
+let gazePointerDownHandler: ((event: PointerEvent) => void) | null = null;
+let gazeFollowRafId: number | null = null;
+let gazePendingPoint: { x: number; y: number } | null = null;
 
 const showMenu = ref(false);
 const menuAnchor = ref({ x: 0, y: 0 });
 const menuPlacement = ref<'left' | 'right'>('left');
 const showModelBrowser = ref(false);
+
+type PhoneChatMessage = {
+  id?: string;
+  sender?: string;
+  type?: string;
+  content?: string;
+  replyContent?: string;
+  description?: string;
+  filename?: string;
+  amount?: number | string;
+  message?: string;
+  membershipType?: string;
+  months?: number | string;
+  time?: number | string;
+  [key: string]: unknown;
+};
+
+type PhoneEventDetail = {
+  contactId?: string;
+  message?: PhoneChatMessage;
+};
+
+type PhoneTTSSource = 'acsus' | 'baibai';
+type PhoneTTSQueueItem = { source: PhoneTTSSource; contactId: string; message: PhoneChatMessage };
+type StopHandle = { stop: () => void };
+type AssistantChatMessage = {
+  message_id?: number | string;
+  message?: string;
+  role?: string;
+  [key: string]: unknown;
+};
+
+const PHONE_TTS_SEEN_MAX = 4000;
+const BAIBAI_ASSISTANT_SEEN_MAX = 2000;
+let phoneTtsBridgeBound = false;
+let phoneMessageReceivedHandler: ((event: Event) => void) | null = null;
+let phoneAIGenCompleteHandler: ((event: Event) => void) | null = null;
+let phoneTtsListenSinceSec = 0;
+const phoneSeenMessageKeys = new Set<string>();
+const phoneSeenMessageOrder: string[] = [];
+const phoneTtsQueue: PhoneTTSQueueItem[] = [];
+let phoneTtsQueueRunning = false;
+let baibaiPhoneTtsBridgeBound = false;
+let baibaiPhonePollTimer: number | null = null;
+const baibaiEventStops: StopHandle[] = [];
+const baibaiSeenAssistantIds = new Set<number>();
+const baibaiSeenAssistantOrder: number[] = [];
 
 function getTopWindow(): Window {
   try {
@@ -105,6 +162,615 @@ function getCurrentCharacterId(): string {
     // ignore
   }
   return 'default';
+}
+
+function getPhoneStore(): any {
+  try {
+    const topAny: any = getTopWindow() as any;
+    const store = topAny?.extension_settings?.acsusPawsPuffs?.phone;
+    if (store && typeof store === 'object') return store;
+  } catch {
+    // ignore
+  }
+
+  try {
+    const localAny: any = window as any;
+    const store = localAny?.extension_settings?.acsusPawsPuffs?.phone;
+    if (store && typeof store === 'object') return store;
+  } catch {
+    // ignore
+  }
+
+  return null;
+}
+
+function getPhoneContactName(source: PhoneTTSSource, contactId: string): string {
+  const safeId = String(contactId || '').trim();
+  const fallback = safeId.replace(/^chat_/, '').replace(/^tavern_/, '').trim() || '联系人';
+  if (source === 'baibai') return fallback;
+
+  const store = getPhoneStore();
+  const contacts = Array.isArray(store?.contacts) ? store.contacts : [];
+  const matched = contacts.find((item: any) => String(item?.id || '').trim() === safeId);
+  const name = String(matched?.name || '').trim();
+  return name || fallback;
+}
+
+function getPhoneChatHistory(contactId: string): PhoneChatMessage[] {
+  const store = getPhoneStore();
+  const key = `chat_${String(contactId || '').trim()}`;
+  const history = store?.chats?.[key];
+  return Array.isArray(history) ? (history as PhoneChatMessage[]) : [];
+}
+
+function isNonUserPhoneMessage(message: PhoneChatMessage | null | undefined): boolean {
+  const sender = String(message?.sender || '')
+    .trim()
+    .toLowerCase();
+  const type = String(message?.type || 'text')
+    .trim()
+    .toLowerCase();
+  return sender === 'contact' && type === 'text';
+}
+
+function sanitizePhoneSpeakText(value: unknown): string {
+  return String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isPhoneAutoReadEnabled(source: PhoneTTSSource): boolean {
+  if (source === 'baibai') {
+    return settings.value.baibaiPhoneMessageAutoRead === true;
+  }
+  return settings.value.phoneMessageAutoRead !== false;
+}
+
+function getNormalizedUserNames(): Set<string> {
+  const names = new Set<string>();
+  const append = (value: unknown) => {
+    const normalized = sanitizePhoneSpeakText(value).toLowerCase();
+    if (normalized) names.add(normalized);
+  };
+
+  try {
+    append((SillyTavern as any)?.name1);
+  } catch {
+    // ignore
+  }
+
+  try {
+    const ctx = (SillyTavern as any)?.getContext?.();
+    append(ctx?.name1);
+    append(ctx?.userName);
+  } catch {
+    // ignore
+  }
+
+  append('user');
+  return names;
+}
+
+function isBaibaiUserSender(senderName: unknown): boolean {
+  const sender = sanitizePhoneSpeakText(senderName).toLowerCase();
+  if (!sender) return false;
+  return getNormalizedUserNames().has(sender);
+}
+
+function sanitizeAssistantPhoneCommandText(value: unknown): string {
+  return String(value ?? '')
+    .replace(/<think[ing]*?>[\s\S]*?<\/think[ing]*?>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .trim();
+}
+
+function hasBaibaiPhoneCommand(value: unknown): boolean {
+  return /\bqq\.(?:private|group)\s*\(/i.test(String(value ?? ''));
+}
+
+function parseBaibaiCommandArgs(rawArgs: string): string[] {
+  const source = String(rawArgs || '').trim();
+  if (!source) return [];
+
+  const quotedArgs: string[] = [];
+  const quotedMatcher = /'([^']*)'|"([^"]*)"/g;
+  for (const match of source.matchAll(quotedMatcher)) {
+    const value = sanitizePhoneSpeakText(match[1] ?? match[2] ?? '');
+    quotedArgs.push(value);
+  }
+  if (quotedArgs.length > 0) return quotedArgs;
+
+  return source
+    .split(',')
+    .map((item) => sanitizePhoneSpeakText(item))
+    .filter((item) => !!item);
+}
+
+function extractBaibaiTextPayloads(rawPayload: unknown): string[] {
+  const payload = String(rawPayload ?? '');
+  if (!payload) return [];
+
+  const marker = payload.match(/\[(.+?)-(.+?)\]/);
+  if (!marker) {
+    const text = sanitizePhoneSpeakText(payload);
+    return text ? [text] : [];
+  }
+
+  const markerType = sanitizePhoneSpeakText(marker[1]).toLowerCase();
+  if (markerType === 'bqb' || markerType === 'img') {
+    const text = sanitizePhoneSpeakText(payload.replace(marker[0], ''));
+    return text ? [text] : [];
+  }
+
+  return [];
+}
+
+function extractPhoneSpeakText(message: PhoneChatMessage): string {
+  const type = String(message?.type || 'text')
+    .trim()
+    .toLowerCase();
+
+  switch (type) {
+    case 'text': {
+      let text = sanitizePhoneSpeakText(message.content);
+      text = text.replace(/^\[约定计划(?:已完成|过程|内心印象|过程记录)?\]/, '').trim();
+      return text;
+    }
+    case 'quote':
+      return sanitizePhoneSpeakText(message.replyContent || message.content || '引用消息');
+    case 'emoji':
+      return sanitizePhoneSpeakText(`表情 ${message.content || '消息'}`);
+    case 'image':
+    case 'image-real':
+    case 'image-fake': {
+      const desc = sanitizePhoneSpeakText(message.description || message.content || '');
+      return desc ? `图片，${desc}` : '图片消息';
+    }
+    case 'redpacket':
+      return `红包 ${sanitizePhoneSpeakText(message.amount || 0)} 元`;
+    case 'transfer': {
+      const amount = sanitizePhoneSpeakText(message.amount || 0);
+      const note = sanitizePhoneSpeakText(message.message || message.content || '');
+      return note ? `转账 ${amount} 元，留言 ${note}` : `转账 ${amount} 元`;
+    }
+    case 'video':
+      return sanitizePhoneSpeakText(`视频 ${message.description || ''}`) || '视频消息';
+    case 'file':
+      return sanitizePhoneSpeakText(`文件 ${message.filename || ''}`) || '文件消息';
+    case 'poke':
+      return '戳了戳你';
+    case 'recalled':
+    case 'recalled-pending':
+      return '撤回了一条消息';
+    case 'friend_request':
+    case 'friend_added':
+    case 'friend_deleted':
+      return sanitizePhoneSpeakText(message.content || '');
+    case 'gift-membership':
+    case 'buy-membership': {
+      const months = sanitizePhoneSpeakText(message.months || '');
+      const memberType = String(message.membershipType || '').toUpperCase() || '会员';
+      return sanitizePhoneSpeakText(`赠送${months ? `${months}个月` : ''}${memberType}`);
+    }
+    default:
+      return sanitizePhoneSpeakText(message.content || message.description || '');
+  }
+}
+
+function getPhoneMessageKey(source: PhoneTTSSource, contactId: string, message: PhoneChatMessage): string {
+  const safeContact = String(contactId || '').trim();
+  const messageId = sanitizePhoneSpeakText(message?.id);
+  if (messageId) return `${source}:${safeContact}:${messageId}`;
+
+  const sender = sanitizePhoneSpeakText(message?.sender).toLowerCase() || 'unknown';
+  const type = sanitizePhoneSpeakText(message?.type).toLowerCase() || 'text';
+  const time = Number(message?.time || 0);
+  const content = sanitizePhoneSpeakText(
+    message?.content || message?.replyContent || message?.description || message?.filename || '',
+  ).slice(0, 72);
+
+  return `${source}:${safeContact}:${sender}:${type}:${time}:${content}`;
+}
+
+function rememberPhoneMessageKey(key: string): void {
+  if (!key || phoneSeenMessageKeys.has(key)) return;
+  phoneSeenMessageKeys.add(key);
+  phoneSeenMessageOrder.push(key);
+  if (phoneSeenMessageOrder.length <= PHONE_TTS_SEEN_MAX) return;
+  const stale = phoneSeenMessageOrder.shift();
+  if (stale) {
+    phoneSeenMessageKeys.delete(stale);
+  }
+}
+
+function markExistingPhoneMessagesAsSeen(): void {
+  const store = getPhoneStore();
+  const chats = store?.chats;
+  if (!chats || typeof chats !== 'object') return;
+
+  for (const [chatKey, list] of Object.entries(chats as Record<string, unknown>)) {
+    if (!Array.isArray(list)) continue;
+    const contactId = String(chatKey || '')
+      .replace(/^chat_/, '')
+      .trim();
+    if (!contactId) continue;
+
+    for (const raw of list) {
+      const message = raw as PhoneChatMessage;
+      if (!isNonUserPhoneMessage(message)) continue;
+      rememberPhoneMessageKey(getPhoneMessageKey('acsus', contactId, message));
+    }
+  }
+}
+
+function resolveTavernEventName(eventKey: string): string | null {
+  try {
+    const top = getTopWindow() as any;
+    const fromTop = top?.SillyTavern?.eventTypes?.[eventKey];
+    if (fromTop) return String(fromTop);
+  } catch {
+    // ignore
+  }
+
+  try {
+    const fromLegacy = (tavern_events as any)?.[eventKey];
+    if (fromLegacy) return String(fromLegacy);
+  } catch {
+    // ignore
+  }
+
+  return null;
+}
+
+function bindTavernEvent(eventKey: string, handler: (...args: any[]) => void): StopHandle | null {
+  const eventName = resolveTavernEventName(eventKey);
+  if (!eventName) return null;
+
+  try {
+    const top = getTopWindow() as any;
+    const eventSource = top?.SillyTavern?.eventSource;
+    if (eventSource && typeof eventSource.on === 'function') {
+      eventSource.on(eventName, handler);
+      return {
+        stop: () => {
+          try {
+            if (typeof eventSource.off === 'function') {
+              eventSource.off(eventName, handler);
+            } else if (typeof eventSource.removeListener === 'function') {
+              eventSource.removeListener(eventName, handler);
+            }
+          } catch {
+            // ignore
+          }
+        },
+      };
+    }
+  } catch {
+    // ignore
+  }
+
+  if (typeof eventOn === 'function') {
+    return eventOn(eventName as any, handler);
+  }
+  return null;
+}
+
+function resetBaibaiAssistantSeenState(): void {
+  baibaiSeenAssistantIds.clear();
+  baibaiSeenAssistantOrder.length = 0;
+}
+
+function rememberBaibaiAssistantMessageId(messageId: number): void {
+  if (!Number.isFinite(messageId)) return;
+  if (baibaiSeenAssistantIds.has(messageId)) return;
+  baibaiSeenAssistantIds.add(messageId);
+  baibaiSeenAssistantOrder.push(messageId);
+  if (baibaiSeenAssistantOrder.length <= BAIBAI_ASSISTANT_SEEN_MAX) return;
+  const stale = baibaiSeenAssistantOrder.shift();
+  if (typeof stale === 'number') {
+    baibaiSeenAssistantIds.delete(stale);
+  }
+}
+
+function getAssistantChatMessages(): AssistantChatMessage[] {
+  try {
+    const messages = getChatMessages(`0-{{lastMessageId}}`, {
+      role: 'assistant',
+      hide_state: 'unhidden',
+    });
+    return Array.isArray(messages) ? (messages as AssistantChatMessage[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseBaibaiPhoneMessagesFromAssistant(
+  message: AssistantChatMessage,
+): Array<{ contactId: string; message: PhoneChatMessage }> {
+  const normalizedText = sanitizeAssistantPhoneCommandText(message?.message);
+  if (!normalizedText || !hasBaibaiPhoneCommand(normalizedText)) return [];
+
+  const assistantMessageId = Number(message?.message_id);
+  const parsed: Array<{ contactId: string; message: PhoneChatMessage }> = [];
+  const commandMatches = normalizedText.matchAll(/([a-zA-Z]+\.[a-zA-Z]+)\(([\s\S]*?)\);/g);
+  let commandIndex = 0;
+
+  for (const match of commandMatches) {
+    commandIndex++;
+    const commandName = String(match[1] || '')
+      .trim()
+      .toLowerCase();
+    if (commandName !== 'qq.private' && commandName !== 'qq.group') continue;
+
+    const args = parseBaibaiCommandArgs(String(match[2] || ''));
+    if (args.length < 4) continue;
+
+    const contactId = sanitizePhoneSpeakText(args[0]) || '柏柏会话';
+    const senderName = sanitizePhoneSpeakText(args[1]);
+    if (!senderName || isBaibaiUserSender(senderName)) continue;
+
+    const textPayloads = extractBaibaiTextPayloads(args[2]);
+    if (textPayloads.length === 0) continue;
+
+    const rawTime = sanitizePhoneSpeakText(args[3]);
+    const messageIdPart = Number.isFinite(assistantMessageId) ? String(assistantMessageId) : 'unknown';
+
+    textPayloads.forEach((text, index) => {
+      const speakText = sanitizePhoneSpeakText(text);
+      if (!speakText) return;
+
+      parsed.push({
+        contactId,
+        message: {
+          id: `baibai_${messageIdPart}_${commandIndex}_${index}`,
+          sender: 'contact',
+          type: 'text',
+          content: speakText,
+          time: rawTime || messageIdPart,
+        },
+      });
+    });
+  }
+
+  return parsed;
+}
+
+function markExistingBaibaiMessagesAsSeen(): void {
+  const messages = getAssistantChatMessages();
+  for (const item of messages) {
+    const messageId = Number(item?.message_id);
+    if (!Number.isFinite(messageId) || messageId < 0) continue;
+    rememberBaibaiAssistantMessageId(messageId);
+  }
+}
+
+function collectUnsyncedBaibaiMessages(): void {
+  const messages = getAssistantChatMessages();
+  if (messages.length === 0) return;
+
+  for (const item of messages) {
+    const messageId = Number(item?.message_id);
+    if (!Number.isFinite(messageId) || messageId < 0) continue;
+    if (baibaiSeenAssistantIds.has(messageId)) continue;
+
+    rememberBaibaiAssistantMessageId(messageId);
+
+    const parsedMessages = parseBaibaiPhoneMessagesFromAssistant(item);
+    for (const parsed of parsedMessages) {
+      enqueuePhoneMessageForTTS(parsed.contactId, parsed.message, 'baibai');
+    }
+  }
+}
+
+async function waitForTTSIdle(timeoutMs = 45000): Promise<void> {
+  const startAt = Date.now();
+  while (TTSManager.isLoading || TTSManager.isPlaying) {
+    if (Date.now() - startAt > timeoutMs) {
+      TTSManager.stop();
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 120);
+    });
+  }
+}
+
+async function drainPhoneTTSQueue(): Promise<void> {
+  if (phoneTtsQueueRunning) return;
+  phoneTtsQueueRunning = true;
+
+  try {
+    while (phoneTtsQueue.length > 0) {
+      const next = phoneTtsQueue.shift();
+      if (!next) continue;
+
+      const ttsEnabled = getTTSEnabled();
+      const autoPlay = !!settings.value.ttsAutoPlay;
+      const phoneAutoRead = isPhoneAutoReadEnabled(next.source);
+      if (!ttsEnabled || !autoPlay || !phoneAutoRead) continue;
+
+      const speakText = extractPhoneSpeakText(next.message);
+      if (!speakText) continue;
+
+      const contactName = getPhoneContactName(next.source, next.contactId);
+      const speaker = getCurrentCharacterId();
+      const voiceName = String(settings.value.ttsDefaultSpeaker || '').trim();
+      const ttsOverrides: { speaker?: string; context?: string } = {};
+      if (voiceName) ttsOverrides.speaker = voiceName;
+      const contextPrefix = next.source === 'baibai' ? '柏柏小手机' : '毛球点心铺手机';
+      ttsOverrides.context = `${contextPrefix}·${contactName}`;
+
+      await waitForTTSIdle(45000);
+
+      await TTSManager.speak(
+        {
+          type: 'dialogue',
+          speaker,
+          text: speakText,
+          tts: ttsOverrides,
+        },
+        `desktop_pet_phone_${next.source}_${next.contactId}_${Date.now()}`,
+      );
+    }
+  } catch (e) {
+    logError('手机消息自动朗读失败', e);
+  } finally {
+    phoneTtsQueueRunning = false;
+  }
+}
+
+function enqueuePhoneMessageForTTS(
+  contactId: string,
+  message: PhoneChatMessage | null | undefined,
+  source: PhoneTTSSource = 'acsus',
+): void {
+  if (!message) return;
+  if (!isNonUserPhoneMessage(message)) return;
+
+  const key = getPhoneMessageKey(source, contactId, message);
+  if (phoneSeenMessageKeys.has(key)) return;
+  rememberPhoneMessageKey(key);
+
+  const messageSec = Number(message.time || 0);
+  if (
+    source === 'acsus' &&
+    Number.isFinite(messageSec) &&
+    messageSec > 0 &&
+    phoneTtsListenSinceSec > 0 &&
+    messageSec + 2 < phoneTtsListenSinceSec
+  ) {
+    return;
+  }
+
+  if (!isPhoneAutoReadEnabled(source)) {
+    return;
+  }
+
+  phoneTtsQueue.push({ source, contactId, message });
+  void drainPhoneTTSQueue();
+}
+
+function collectUnsyncedPhoneMessages(contactId: string): void {
+  const history = getPhoneChatHistory(contactId);
+  if (history.length === 0) return;
+
+  const pending: PhoneChatMessage[] = [];
+  for (let i = history.length - 1; i >= 0; i--) {
+    const message = history[i];
+    if (!isNonUserPhoneMessage(message)) continue;
+
+    const key = getPhoneMessageKey('acsus', contactId, message);
+    if (phoneSeenMessageKeys.has(key)) {
+      break;
+    }
+    pending.push(message);
+  }
+
+  pending.reverse().forEach((message) => {
+    enqueuePhoneMessageForTTS(contactId, message);
+  });
+}
+
+function bindPhoneTTSBridge(): void {
+  if (phoneTtsBridgeBound) return;
+
+  phoneTtsListenSinceSec = Math.floor(Date.now() / 1000);
+  markExistingPhoneMessagesAsSeen();
+
+  const top = getTopWindow();
+  const topDoc = top.document ?? document;
+
+  phoneMessageReceivedHandler = (event: Event) => {
+    const detail = (event as CustomEvent<PhoneEventDetail>).detail || {};
+    const contactId = String(detail.contactId || '').trim();
+    if (!contactId) return;
+    enqueuePhoneMessageForTTS(contactId, detail.message);
+  };
+
+  phoneAIGenCompleteHandler = (event: Event) => {
+    const detail = (event as CustomEvent<PhoneEventDetail>).detail || {};
+    const contactId = String(detail.contactId || '').trim();
+    if (!contactId) return;
+    collectUnsyncedPhoneMessages(contactId);
+  };
+
+  topDoc.addEventListener('phone-message-received', phoneMessageReceivedHandler);
+  topDoc.addEventListener('phone-ai-generation-complete', phoneAIGenCompleteHandler);
+  phoneTtsBridgeBound = true;
+  log('手机消息 TTS 桥接已启用');
+}
+
+function unbindPhoneTTSBridge(): void {
+  if (!phoneTtsBridgeBound) return;
+
+  const top = getTopWindow();
+  const topDoc = top.document ?? document;
+
+  if (phoneMessageReceivedHandler) {
+    topDoc.removeEventListener('phone-message-received', phoneMessageReceivedHandler);
+  }
+  if (phoneAIGenCompleteHandler) {
+    topDoc.removeEventListener('phone-ai-generation-complete', phoneAIGenCompleteHandler);
+  }
+
+  phoneMessageReceivedHandler = null;
+  phoneAIGenCompleteHandler = null;
+  phoneTtsQueue.length = 0;
+  phoneTtsQueueRunning = false;
+  phoneTtsBridgeBound = false;
+}
+
+function bindBaibaiPhoneTTSBridge(): void {
+  if (baibaiPhoneTtsBridgeBound) return;
+
+  resetBaibaiAssistantSeenState();
+  markExistingBaibaiMessagesAsSeen();
+
+  const sync = () => {
+    collectUnsyncedBaibaiMessages();
+  };
+
+  const onChatChanged = () => {
+    resetBaibaiAssistantSeenState();
+    markExistingBaibaiMessagesAsSeen();
+  };
+
+  const eventKeys = ['GENERATION_ENDED', 'MESSAGE_UPDATED', 'MESSAGE_SWIPED'] as const;
+  eventKeys.forEach((eventKey) => {
+    const stop = bindTavernEvent(eventKey, sync);
+    if (stop) baibaiEventStops.push(stop);
+  });
+
+  const chatChangedStop = bindTavernEvent('CHAT_CHANGED', onChatChanged);
+  if (chatChangedStop) {
+    baibaiEventStops.push(chatChangedStop);
+  }
+
+  if (baibaiEventStops.length === 0) {
+    baibaiPhonePollTimer = window.setInterval(() => {
+      collectUnsyncedBaibaiMessages();
+    }, 1200);
+  }
+
+  baibaiPhoneTtsBridgeBound = true;
+  log('柏柏小手机 TTS 桥接已启用');
+}
+
+function unbindBaibaiPhoneTTSBridge(): void {
+  if (!baibaiPhoneTtsBridgeBound) return;
+
+  baibaiEventStops.forEach((stop) => {
+    stop.stop();
+  });
+  baibaiEventStops.length = 0;
+
+  if (baibaiPhonePollTimer !== null) {
+    window.clearInterval(baibaiPhonePollTimer);
+    baibaiPhonePollTimer = null;
+  }
+
+  resetBaibaiAssistantSeenState();
+  baibaiPhoneTtsBridgeBound = false;
 }
 
 function applyEmotionToLive2D(tag: EmotionTag): boolean {
@@ -241,7 +907,10 @@ function closePet(): void {
   showModelBrowser.value = false;
   uiStore.closeSettings();
   onBubbleHidden();
+  unbindGlobalGazeFollow(true);
 
+  unbindPhoneTTSBridge();
+  unbindBaibaiPhoneTTSBridge();
   ChatMonitor.destroy();
   Commentator.destroy();
   Live2DManager.destroyModel();
@@ -284,6 +953,90 @@ function clearViewportResizeSyncTimer(): void {
   if (viewportResizeSyncTimer === null) return;
   window.clearTimeout(viewportResizeSyncTimer);
   viewportResizeSyncTimer = null;
+}
+
+function clearGazeFollowRaf(): void {
+  if (gazeFollowRafId === null) return;
+  const top = getTopWindow();
+  try {
+    top.cancelAnimationFrame(gazeFollowRafId);
+  } catch {
+    // ignore
+  }
+  gazeFollowRafId = null;
+}
+
+function isGazePointerTypeSupported(pointerType: string): boolean {
+  return pointerType === 'mouse' || pointerType === 'pen';
+}
+
+function scheduleGazeFollow(clientX: number, clientY: number): void {
+  if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
+
+  gazePendingPoint = { x: clientX, y: clientY };
+  if (gazeFollowRafId !== null) return;
+
+  const top = getTopWindow();
+  gazeFollowRafId = top.requestAnimationFrame(() => {
+    gazeFollowRafId = null;
+
+    const point = gazePendingPoint;
+    gazePendingPoint = null;
+    if (!point) return;
+    if (settings.value.gazeFollowMouseEnabled === false) return;
+    if (Live2DStage.isPreviewMounted()) return;
+
+    Live2DManager.focusByClientPoint(point.x, point.y, false);
+  });
+}
+
+function bindGlobalGazeFollow(): void {
+  if (gazeFollowBound) return;
+
+  const top = getTopWindow();
+  const topDoc = top.document ?? document;
+  const handlePointerEvent = (event: PointerEvent) => {
+    if (!isGazePointerTypeSupported(event.pointerType)) return;
+    scheduleGazeFollow(event.clientX, event.clientY);
+  };
+
+  gazePointerMoveHandler = handlePointerEvent;
+  gazePointerDownHandler = handlePointerEvent;
+
+  topDoc.addEventListener('pointermove', gazePointerMoveHandler, { passive: true });
+  topDoc.addEventListener('pointerdown', gazePointerDownHandler, { passive: true });
+  gazeFollowBound = true;
+}
+
+function unbindGlobalGazeFollow(resetFocus = true): void {
+  clearGazeFollowRaf();
+  gazePendingPoint = null;
+
+  const top = getTopWindow();
+  const topDoc = top.document ?? document;
+
+  if (gazePointerMoveHandler) {
+    topDoc.removeEventListener('pointermove', gazePointerMoveHandler);
+  }
+  if (gazePointerDownHandler) {
+    topDoc.removeEventListener('pointerdown', gazePointerDownHandler);
+  }
+
+  gazePointerMoveHandler = null;
+  gazePointerDownHandler = null;
+  gazeFollowBound = false;
+
+  if (resetFocus) {
+    Live2DManager.focusCenter(true);
+  }
+}
+
+function syncGazeFollowBinding(): void {
+  if (settings.value.gazeFollowMouseEnabled === false) {
+    unbindGlobalGazeFollow(true);
+    return;
+  }
+  bindGlobalGazeFollow();
 }
 
 function syncStageAfterViewportResize(reason: string): void {
@@ -499,6 +1252,8 @@ async function initPet() {
     } catch (e) {
       logError('TTS 模块初始化失败（不影响模型显示）', e);
     }
+    bindPhoneTTSBridge();
+    bindBaibaiPhoneTTSBridge();
 
     Commentator.setCallback((text: string, isDone: boolean) => {
       const parsed = parseEmotionCotText(text, {
@@ -600,8 +1355,12 @@ async function initPet() {
         Live2DManager.playRandomAnimation();
       },
       onDoubleTap: (_e: GestureEvent) => {
-        log('双击宠物 -> 触发吐槽');
+        const motionEnabled = settings.value.doubleTapRandomMotionEnabled !== false;
+        log(motionEnabled ? '双击宠物 -> 触发吐槽 + 随机动作' : '双击宠物 -> 触发吐槽');
         ChatMonitor.manualTrigger();
+        if (motionEnabled) {
+          Live2DManager.playRandomAnimation();
+        }
       },
       onLongPress: (_e: GestureEvent) => {
         log('长按宠物 -> 打开功能菜单');
@@ -676,6 +1435,13 @@ watch(
 );
 
 watch(
+  () => settings.value.gazeFollowMouseEnabled,
+  () => {
+    syncGazeFollowBinding();
+  },
+);
+
+watch(
   () => settings.value.petScale,
   (scale) => {
     const safeScale = normalizePetScale(scale);
@@ -693,12 +1459,16 @@ watch(
 
 onMounted(() => {
   bindViewportResizeRecovery();
+  syncGazeFollowBinding();
   initPet();
 });
 
 onUnmounted(() => {
   unbindViewportResizeRecovery();
+  unbindGlobalGazeFollow(true);
   unregisterGlobalOpenSettings();
+  unbindPhoneTTSBridge();
+  unbindBaibaiPhoneTTSBridge();
   modelLoadTaskId++;
   clearModelLoadingHideTimer();
   clearStatusCheckTimer();
