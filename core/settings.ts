@@ -146,7 +146,57 @@ const SettingsSchema = z
         probeOnAudioError: z.boolean().default(false),
         modelSwitchMode: z.enum(['none', 'set_model', 'set_weights']).default('set_weights'),
         setModelEndpoint: z.string().default('/set_model'),
+        rootDir: z.string().default(''),
         importPathPrefix: z.string().default(''),
+        models: z
+          .array(
+            z
+              .object({
+                id: z.string().default(''),
+                name: z.string().default(''),
+                enabled: z.boolean().default(true),
+                desc: z.string().default(''),
+                paths: z
+                  .object({
+                    gptWeightsPath: z.string().default(''),
+                    sovitsWeightsPath: z.string().default(''),
+                    defaultRefAudioPath: z.string().default(''),
+                  })
+                  .default({}),
+                params: z
+                  .object({
+                    promptText: z.string().default(''),
+                    promptLang: z.string().default('zh'),
+                    textLang: z.string().default('auto'),
+                    textSplitMethod: z.string().default('cut5'),
+                    speedFactor: z.number().min(0.1).max(3).default(1),
+                    mediaType: z.enum(['wav', 'ogg', 'raw']).default('wav'),
+                    streamingMode: z.boolean().default(true),
+                    modelSwitchMode: z.enum(['none', 'set_model', 'set_weights']).default('set_weights'),
+                    setModelEndpoint: z.string().default('/set_model'),
+                    strictWeightSwitch: z.boolean().default(false),
+                  })
+                  .default({}),
+                refAudios: z
+                  .array(
+                    z
+                      .object({
+                        id: z.string().default(''),
+                        name: z.string().default(''),
+                        path: z.string().default(''),
+                        promptText: z.string().default(''),
+                        promptLang: z.string().default('zh'),
+                        textLang: z.string().default('auto'),
+                      })
+                      .default({}),
+                  )
+                  .default([]),
+                defaultRefId: z.string().default(''),
+                expressionRefMap: z.record(z.string(), z.string()).default({}),
+              })
+              .default({}),
+          )
+          .default([]),
         voices: z
           .array(
             z
@@ -161,6 +211,7 @@ const SettingsSchema = z
                 sovitsWeightsPath: z.string().default(''),
                 modelSwitchMode: z.enum(['none', 'set_model', 'set_weights']).default('set_weights'),
                 setModelEndpoint: z.string().default('/set_model'),
+                strictWeightSwitch: z.boolean().default(false),
               })
               .default({}),
           )

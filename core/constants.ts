@@ -1,15 +1,46 @@
 /** 脚本名称 */
 export const SCRIPT_NAME = '酒馆桌面宠物';
 
+/** IndexedDB 配置 */
+export const DB_NAME = 'DesktopPetPluginDB';
+export const DB_VERSION = 1;
+export const STORE_LIVE2D_MODELS = 'live2dModels';
+export const STORE_SDK_CACHE = 'sdkCache';
+
+/** Live2D runtime 类型 */
+export type Live2DRuntimeType = 'legacy' | 'cubism5';
+
+/** 本地模型路径协议（单槽覆盖） */
+export const LOCAL_LIVE2D_MODEL_PATH_PREFIX = 'local://desktop-pet/';
+export const LOCAL_LIVE2D_MODEL_SLOT_ID = 'default';
+export const LOCAL_LIVE2D_MODEL_PATH = `${LOCAL_LIVE2D_MODEL_PATH_PREFIX}${LOCAL_LIVE2D_MODEL_SLOT_ID}`;
+export const EMPTY_MOTION_GROUP_VALUE = '__desktop_pet_empty_motion_group__';
+
 /** Live2D CDN 基础地址（使用 pixi-live2d-display 测试资源） */
 export const LIVE2D_CDN_BASE = 'https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/';
 
 /** SDK CDN 地址 */
 export const SDK_URLS = {
   PIXI: 'https://cdn.jsdelivr.net/npm/pixi.js@6.5.10/dist/browser/pixi.min.js',
-  CUBISM4_CORE: 'https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js',
+  CUBISM4_CORE: 'https://cdn.jsdelivr.net/npm/live2dcubismcore@1.0.2/live2dcubismcore.min.js',
+  CUBISM4_CORE_FALLBACK_URLS: Object.freeze([
+    'https://gcore.jsdelivr.net/npm/live2dcubismcore@1.0.2/live2dcubismcore.min.js',
+    'https://unpkg.com/live2dcubismcore@1.0.2/live2dcubismcore.min.js',
+    'https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js',
+  ]),
+  CUBISM5_CORE: 'https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js',
+  CUBISM5_CORE_FALLBACK_URLS: Object.freeze([
+    'https://cdn.jsdelivr.net/gh/bigmalove/galgame@main/dist/live2dcubismcore.min.js',
+    'https://gcore.jsdelivr.net/gh/bigmalove/galgame@main/dist/live2dcubismcore.min.js',
+  ]),
   CUBISM2_CORE: 'https://cdn.jsdelivr.net/gh/dylanNew/live2d/webgl/Live2D/lib/live2d.min.js',
   PIXI_LIVE2D_DISPLAY: 'https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.4.0/dist/index.min.js',
+  CUBISM5_RUNTIME: 'https://cdn.jsdelivr.net/gh/bigmalove/galgame@main/dist/cubism5.runtime.min.js',
+  CUBISM5_RUNTIME_FALLBACK_URLS: Object.freeze([
+    'https://gcore.jsdelivr.net/gh/bigmalove/galgame@main/dist/cubism5.runtime.min.js',
+    'https://cdn.jsdelivr.net/gh/bigmalove/galgame@main/dist/cubism5.js',
+    'https://gcore.jsdelivr.net/gh/bigmalove/galgame@main/dist/cubism5.js',
+  ]),
 } as const;
 
 /** 内置推荐模型列表 */

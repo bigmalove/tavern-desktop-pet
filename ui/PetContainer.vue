@@ -53,10 +53,11 @@ import { TTSManager } from '../audio/tts-manager';
 import { Commentator } from '../chat/commentator';
 import { parseEmotionCotText } from '../chat/emotion-cot';
 import { ChatMonitor } from '../chat/monitor';
-import { DEFAULTS, type EmotionTag } from '../core/constants';
+import { DEFAULTS, LOCAL_LIVE2D_MODEL_PATH_PREFIX, type EmotionTag } from '../core/constants';
 import { getEmotionConfigByTag } from '../core/emotion';
 import { useSettingsStore } from '../core/settings';
 import { useUiStore } from '../core/ui';
+import { hasLive2DModel } from '../db/live2d-models';
 import { Live2DManager, type ModelLoadProgress } from '../live2d/manager';
 import { matchLive2DExpression, matchLive2DMotion } from '../live2d/expression-motion';
 import { LipSyncManager, setLipSyncRefs } from '../live2d/lip-sync';
@@ -1402,12 +1403,40 @@ async function initPet() {
 }
 
 async function onModelChange(path: string) {
+  const nextPath = String(path || '').trim();
+  const isLocalModel =
+    nextPath.length > 0 &&
+    nextPath.toLowerCase().startsWith(LOCAL_LIVE2D_MODEL_PATH_PREFIX.toLowerCase());
+
+  if (isLocalModel) {
+    try {
+      const exists = await hasLive2DModel();
+      if (!exists) {
+        const message = '未找到已上传本地模型，请先在设置中上传 ZIP 模型。';
+        log(`模型切换中止: local model missing, path=${nextPath}`);
+        toastr.error(message);
+        scheduleStatusCheck('model-change-local-missing');
+        return;
+      }
+    } catch (e) {
+      const message = `检查本地模型失败: ${e instanceof Error ? e.message : String(e)}`;
+      log(`模型切换检查异常: path=${nextPath}`, e);
+      toastr.error(message);
+      scheduleStatusCheck('model-change-local-check-error');
+      return;
+    }
+  }
+
   const loaded = await loadModelWithProgress(path);
   if (loaded) {
     const stageSize = getStageSize(settings.value.petScale);
     Live2DManager.mountToStage(stageSize.width, stageSize.height, 1);
+  } else if (isLocalModel) {
+    const message = '本地模型加载失败，请尝试重新上传 ZIP 或切换远程模型。';
+    log(`本地模型加载失败: path=${nextPath}`);
+    toastr.error(message);
   }
-  scheduleStatusCheck('model-change');
+  scheduleStatusCheck(isLocalModel ? 'model-change-local' : 'model-change');
 }
 
 function onBubbleHidden() {

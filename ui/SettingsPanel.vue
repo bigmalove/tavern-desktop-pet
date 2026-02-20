@@ -211,6 +211,54 @@
               </div>
 
               <div class="form-group">
+                <label>本地 ZIP 模型（单槽覆盖）</label>
+                <div class="model-list">
+                  <button
+                    class="model-btn"
+                    type="button"
+                    :disabled="localModelBusy"
+                    @click="triggerLocalModelUpload"
+                  >
+                    {{ uploadingLocalModel ? '上传解析中...' : '上传 ZIP 模型' }}
+                  </button>
+                  <button
+                    class="model-btn"
+                    type="button"
+                    :disabled="localModelBusy || !localModelExists"
+                    @click="useUploadedModel"
+                  >
+                    使用已上传模型
+                  </button>
+                  <button
+                    class="model-btn"
+                    type="button"
+                    :disabled="localModelBusy || !localModelExists"
+                    @click="clearUploadedModel"
+                  >
+                    清除已上传模型
+                  </button>
+                </div>
+                <input
+                  ref="localModelFileInput"
+                  class="hidden-file-input"
+                  type="file"
+                  accept=".zip,application/zip"
+                  @change="onLocalModelFileChange"
+                />
+                <div class="hint">上传成功后会自动切换到本地路径：{{ LOCAL_LIVE2D_MODEL_PATH }}</div>
+                <div v-if="localModelStatus" class="hint">{{ localModelStatus }}</div>
+                <div v-if="localModelError" class="hint hint-error">{{ localModelError }}</div>
+                <div v-if="localModelInfo" class="local-model-info">
+                  <div>文件：{{ localModelInfo.fileName }}</div>
+                  <div>版本：Cubism {{ localModelInfo.cubismVersion ?? '未知' }}</div>
+                  <div>Runtime：{{ runtimeLabel(localModelInfo.runtimeType) }}</div>
+                  <div>上传时间：{{ formatLocalUploadTime(localModelInfo.uploadTime) }}</div>
+                  <div>文件大小：{{ formatFileSize(localModelInfo.fileSize) }}</div>
+                </div>
+                <div v-else class="hint">当前没有已上传本地模型。</div>
+              </div>
+
+              <div class="form-group">
                 <label>宠物缩放 ({{ petScaleLabel }})</label>
                 <input type="range" v-model.number="settings.petScale" min="0.1" max="3" step="0.05" />
               </div>
@@ -693,11 +741,33 @@
                   <input type="text" v-model="settings.gptSoVits.apiUrl" placeholder="http://127.0.0.1:9880" />
                 </div>
 
+                <div class="form-row">
+                  <div class="form-group half">
+                    <label>GPT-SoVITS 根目录</label>
+                    <input
+                      type="text"
+                      v-model="settings.gptSoVits.rootDir"
+                      placeholder="D:/GPT-SoVITS"
+                      @change="onGptRootDirChange"
+                    />
+                  </div>
+                  <div class="form-group half">
+                    <label>模型总目录 / 路径前缀</label>
+                    <input
+                      type="text"
+                      v-model="settings.gptSoVits.importPathPrefix"
+                      placeholder="D:/模型总目录"
+                      @change="onGptImportPrefixChange"
+                    />
+                  </div>
+                </div>
+
                 <div class="form-group">
                   <label>
                     <input type="checkbox" v-model="settings.gptSoVits.useCorsProxy" />
                     使用酒馆代理（/proxy）
                   </label>
+                  <div class="hint">局域网访问建议开启；修改 config 后需重启酒馆进程。</div>
                 </div>
 
                 <div class="form-row">
@@ -728,27 +798,66 @@
                   </div>
                 </div>
 
-                <div class="form-group">
-                  <label>speed_factor</label>
-                  <input type="number" v-model.number="settings.gptSoVits.speedFactor" min="0.5" max="2" step="0.05" />
+                <div class="form-row">
+                  <div class="form-group half">
+                    <label>speed_factor</label>
+                    <input
+                      type="number"
+                      v-model.number="settings.gptSoVits.speedFactor"
+                      min="0.5"
+                      max="2"
+                      step="0.05"
+                    />
+                  </div>
+                  <div class="form-group half">
+                    <label>模型切换方式</label>
+                    <select v-model="settings.gptSoVits.modelSwitchMode" @change="onGptSwitchModeChange">
+                      <option value="set_weights">set_weights（api_v2.py）</option>
+                      <option value="set_model">set_model（api.py）</option>
+                      <option value="none">不自动切模型</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div v-if="isGptSetModelMode" class="form-group">
+                  <label>set_model endpoint</label>
+                  <input type="text" v-model="settings.gptSoVits.setModelEndpoint" placeholder="/set_model" />
                 </div>
 
                 <div class="form-group">
-                  <label>音色列表（JSON）</label>
-                  <textarea
-                    v-model="gptSoVitsVoicesJson"
-                    rows="6"
-                    placeholder='[{"name":"示例音色","refAudioPath":"wavs/xxx.wav","promptText":"示例参考文本","promptLang":"zh"}]'
-                  ></textarea>
+                  <label>
+                    <input type="checkbox" v-model="settings.gptSoVits.strictWeightSwitch" />
+                    strictWeightSwitch（切权重失败时中断播放）
+                  </label>
+                </div>
+
+                <div class="form-group">
+                  <label>模型管理（v0.9）</label>
+                  <div class="local-model-info">{{ gptModelSummaryHint }}</div>
                   <div class="form-row">
                     <div class="form-group half">
-                      <button class="btn btn-secondary" type="button" @click="saveGptSoVitsVoices">保存音色列表</button>
+                      <button class="btn btn-secondary" type="button" @click="openGptModelManager">打开模型管理器</button>
                     </div>
+                    <div class="form-group half">
+                      <button
+                        class="btn btn-secondary"
+                        type="button"
+                        @click="refreshTtsVoices"
+                        :disabled="refreshingTtsVoices"
+                      >
+                        {{ refreshingTtsVoices ? '刷新中...' : '刷新音色列表' }}
+                      </button>
+                    </div>
+                  </div>
+                  <div class="form-row">
                     <div class="form-group half">
                       <button class="btn btn-test" type="button" @click="testTts" :disabled="!ttsEnabled">试听</button>
                     </div>
+                    <div class="form-group half">
+                      <input type="text" v-model="ttsTestText" placeholder="试听文本" />
+                    </div>
                   </div>
-                  <input type="text" v-model="ttsTestText" placeholder="试听文本" />
+                  <div class="hint">已移除 JSON 手填入口，导入/导出/编辑请在“模型管理器”完成。</div>
                 </div>
               </div>
 
@@ -815,6 +924,334 @@
     </div>
 
     <div
+      v-if="showGptModelManager"
+      class="browser-overlay dp-browser-overlay gpt-model-overlay"
+      :style="overlayFallbackStyle"
+      @click.self="closeGptModelManager"
+    >
+      <div class="browser-dialog dp-browser-dialog gpt-model-dialog" :style="panelFallbackStyle">
+        <div class="browser-dialog-header gpt-model-header">
+          <h3>GPT-SoVITS 模型管理（v0.9）</h3>
+          <div class="gpt-model-header-actions">
+            <button class="btn btn-secondary" type="button" @click="openGptModelManagerImportJson">导入JSON</button>
+            <button class="btn btn-secondary" type="button" @click="openGptModelManagerImportFolder">文件夹导入</button>
+            <button class="btn btn-secondary" type="button" @click="exportGptModelManagerModels">导出JSON</button>
+            <button class="btn btn-secondary" type="button" @click="addGptModelManagerModel">添加模型</button>
+            <button class="close-btn" type="button" @click="closeGptModelManager">X</button>
+          </div>
+        </div>
+
+        <div class="browser-dialog-body gpt-model-body">
+          <div class="gpt-model-tools">
+            <input type="text" v-model="gptModelManagerSearch" placeholder="按模型名 / 描述 / ID 搜索" />
+            <button class="btn btn-secondary" type="button" @click="saveGptModelManager">仅保存</button>
+            <button class="btn btn-primary" type="button" @click="saveGptModelManagerAndClose">保存并关闭</button>
+          </div>
+
+          <input
+            ref="gptModelManagerImportJsonInputRef"
+            type="file"
+            accept=".json,application/json"
+            style="display: none"
+            @change="onGptModelManagerImportJsonChange"
+          />
+          <input
+            ref="gptModelManagerImportFolderInputRef"
+            type="file"
+            webkitdirectory
+            directory
+            multiple
+            style="display: none"
+            @change="onGptModelManagerImportFolderChange"
+          />
+
+          <div v-if="filteredGptModelManagerModels.length === 0" class="local-model-info">
+            当前没有模型，点击“添加模型”或“导入JSON/文件夹导入”创建。
+          </div>
+
+          <div v-else class="gpt-model-card-list">
+            <div v-for="model in filteredGptModelManagerModels" :key="model.id" class="gpt-model-card">
+              <div class="gpt-model-card-head">
+                <label>
+                  <input type="checkbox" v-model="model.enabled" />
+                  启用
+                </label>
+                <span class="gpt-model-id">{{ model.id }}</span>
+              </div>
+
+              <div class="form-row">
+                <div class="form-group half">
+                  <label>模型名</label>
+                  <input type="text" v-model="model.name" placeholder="新模型" />
+                </div>
+                <div class="form-group half">
+                  <label>描述</label>
+                  <input type="text" v-model="model.desc" placeholder="可选描述" />
+                </div>
+              </div>
+
+              <div class="form-row">
+                <div class="form-group half">
+                  <label>GPT 权重</label>
+                  <input type="text" v-model="model.paths.gptWeightsPath" placeholder="GPT_weights/xxx.ckpt" />
+                </div>
+                <div class="form-group half">
+                  <label>SoVITS 权重</label>
+                  <input type="text" v-model="model.paths.sovitsWeightsPath" placeholder="SoVITS_weights/xxx.pth" />
+                </div>
+              </div>
+
+              <div class="form-row">
+                <div class="form-group half">
+                  <label>默认参考音频 ID</label>
+                  <select v-model="model.defaultRefId">
+                    <option value="">未设置</option>
+                    <option v-for="refAudio in model.refAudios" :key="refAudio.id" :value="refAudio.id">
+                      {{ refAudio.id }}（{{ refAudio.name || '未命名' }}）
+                    </option>
+                  </select>
+                </div>
+                <div class="form-group half">
+                  <label>默认参考音频路径</label>
+                  <input
+                    type="text"
+                    v-model="model.paths.defaultRefAudioPath"
+                    placeholder="wavs/xxx.wav"
+                  />
+                </div>
+              </div>
+
+              <div class="hint">
+                参考音频 {{ model.refAudios.length }} 条，表情映射 {{ Object.keys(model.expressionRefMap || {}).length }} 条
+              </div>
+
+              <div class="gpt-model-card-actions">
+                <button class="btn btn-secondary" type="button" @click="openGptModelEditor(model.id)">
+                  编辑参考音频/映射
+                </button>
+                <button class="btn btn-secondary" type="button" @click="setGptModelManagerDefaultSpeaker(model)">
+                  设为默认音色
+                </button>
+                <button class="btn btn-test" type="button" @click="testGptModelManagerModel(model.id)">
+                  保存并试听
+                </button>
+                <button class="btn btn-secondary" type="button" @click="duplicateGptModelManagerModel(model.id)">复制</button>
+                <button class="btn btn-secondary" type="button" @click="removeGptModelManagerModel(model.id)">删除</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-footer">
+          <button class="btn btn-secondary" type="button" @click="closeGptModelManager">取消</button>
+          <button class="btn btn-secondary" type="button" @click="saveGptModelManager">仅保存</button>
+          <button class="btn btn-primary" type="button" @click="saveGptModelManagerAndClose">保存并关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      v-if="showGptModelEditor && gptModelEditor"
+      class="browser-overlay dp-browser-overlay gpt-model-overlay"
+      :style="overlayFallbackStyle"
+      @click.self="closeGptModelEditor"
+    >
+      <div class="browser-dialog dp-browser-dialog gpt-model-editor-dialog" :style="panelFallbackStyle">
+        <div class="browser-dialog-header gpt-model-header">
+          <h3>编辑模型：{{ gptModelEditor.name || gptModelEditor.id }}</h3>
+          <button class="close-btn" type="button" @click="closeGptModelEditor">X</button>
+        </div>
+
+        <div class="browser-dialog-body gpt-model-body">
+          <div class="form-row">
+            <div class="form-group half">
+              <label>ID（保存后会自动规范化）</label>
+              <input type="text" v-model="gptModelEditor.id" placeholder="model_xxx" />
+            </div>
+            <div class="form-group half">
+              <label>
+                <input type="checkbox" v-model="gptModelEditor.enabled" />
+                启用该模型
+              </label>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group half">
+              <label>模型名称</label>
+              <input type="text" v-model="gptModelEditor.name" placeholder="新模型" />
+            </div>
+            <div class="form-group half">
+              <label>描述</label>
+              <input type="text" v-model="gptModelEditor.desc" placeholder="可选描述" />
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group half">
+              <label>GPT 权重路径</label>
+              <input type="text" v-model="gptModelEditor.paths.gptWeightsPath" placeholder="GPT_weights/xxx.ckpt" />
+            </div>
+            <div class="form-group half">
+              <label>SoVITS 权重路径</label>
+              <input
+                type="text"
+                v-model="gptModelEditor.paths.sovitsWeightsPath"
+                placeholder="SoVITS_weights/xxx.pth"
+              />
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group half">
+              <label>prompt_text（默认）</label>
+              <input type="text" v-model="gptModelEditor.params.promptText" placeholder="参考文本" />
+            </div>
+            <div class="form-group half">
+              <label>prompt_lang（默认）</label>
+              <input type="text" v-model="gptModelEditor.params.promptLang" placeholder="zh" />
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group half">
+              <label>text_lang（默认）</label>
+              <input type="text" v-model="gptModelEditor.params.textLang" placeholder="auto/zh/en/ja..." />
+            </div>
+            <div class="form-group half">
+              <label>切分策略</label>
+              <input type="text" v-model="gptModelEditor.params.textSplitMethod" placeholder="cut5" />
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group half">
+              <label>speed_factor</label>
+              <input type="number" v-model.number="gptModelEditor.params.speedFactor" min="0.5" max="2" step="0.05" />
+            </div>
+            <div class="form-group half">
+              <label>media_type</label>
+              <select v-model="gptModelEditor.params.mediaType">
+                <option value="wav">wav</option>
+                <option value="ogg">ogg</option>
+                <option value="raw">raw</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group half">
+              <label>
+                <input type="checkbox" v-model="gptModelEditor.params.streamingMode" />
+                streaming_mode
+              </label>
+            </div>
+            <div class="form-group half">
+              <label>
+                <input type="checkbox" v-model="gptModelEditor.params.strictWeightSwitch" />
+                strictWeightSwitch
+              </label>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group half">
+              <label>切换模式</label>
+              <select v-model="gptModelEditor.params.modelSwitchMode">
+                <option value="set_weights">set_weights</option>
+                <option value="set_model">set_model</option>
+                <option value="none">none</option>
+              </select>
+            </div>
+            <div class="form-group half">
+              <label>set_model endpoint</label>
+              <input type="text" v-model="gptModelEditor.params.setModelEndpoint" placeholder="/set_model" />
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>参考音频列表</label>
+            <div class="gpt-ref-list">
+              <div
+                v-for="(refAudio, refIndex) in gptModelEditor.refAudios"
+                :key="`${refAudio.id || 'ref'}_${refIndex}`"
+                class="gpt-ref-item"
+              >
+                <div class="form-row">
+                  <div class="form-group half">
+                    <label>参考ID</label>
+                    <input type="text" v-model="refAudio.id" placeholder="ref_1" />
+                  </div>
+                  <div class="form-group half">
+                    <label>名称</label>
+                    <input type="text" v-model="refAudio.name" placeholder="默认" />
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label>音频路径</label>
+                  <input type="text" v-model="refAudio.path" placeholder="wavs/xxx.wav" />
+                </div>
+                <div class="form-row">
+                  <div class="form-group half">
+                    <label>prompt_text</label>
+                    <input type="text" v-model="refAudio.promptText" placeholder="参考文本" />
+                  </div>
+                  <div class="form-group half">
+                    <label>prompt_lang</label>
+                    <input type="text" v-model="refAudio.promptLang" placeholder="zh" />
+                  </div>
+                </div>
+                <div class="form-row">
+                  <div class="form-group half">
+                    <label>text_lang</label>
+                    <input type="text" v-model="refAudio.textLang" placeholder="zh" />
+                  </div>
+                  <div class="form-group half gpt-ref-actions">
+                    <button class="btn btn-secondary" type="button" @click="setGptModelEditorDefaultRef(refAudio.id)">
+                      设为默认参考
+                    </button>
+                    <button class="btn btn-secondary" type="button" @click="removeGptModelEditorRefAudio(refIndex)">
+                      删除
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <button class="btn btn-secondary" type="button" @click="addGptModelEditorRefAudio">添加参考音频</button>
+          </div>
+
+          <div class="form-group">
+            <label>表情映射（表情标签 -> 参考ID）</label>
+            <div class="gpt-expression-map-list">
+              <div
+                v-for="(row, rowIndex) in gptModelEditorExpressionRows"
+                :key="`expr_map_${rowIndex}`"
+                class="gpt-expression-map-row"
+              >
+                <input type="text" v-model="row.expression" placeholder="开心" />
+                <select v-model="row.refId">
+                  <option value="">请选择参考音频</option>
+                  <option v-for="refAudio in gptModelEditor.refAudios" :key="refAudio.id" :value="refAudio.id">
+                    {{ refAudio.id }}（{{ refAudio.name || '未命名' }}）
+                  </option>
+                </select>
+                <button class="btn btn-secondary" type="button" @click="removeGptModelEditorExpressionRow(rowIndex)">
+                  删除
+                </button>
+              </div>
+            </div>
+            <button class="btn btn-secondary" type="button" @click="addGptModelEditorExpressionRow">添加映射</button>
+          </div>
+        </div>
+
+        <div class="panel-footer">
+          <button class="btn btn-secondary" type="button" @click="closeGptModelEditor">取消</button>
+          <button class="btn btn-primary" type="button" @click="saveGptModelEditor">保存当前模型</button>
+        </div>
+      </div>
+    </div>
+
+    <div
       v-if="showBrowser"
       class="browser-overlay dp-browser-overlay"
       :style="overlayFallbackStyle"
@@ -838,13 +1275,20 @@ import { storeToRefs } from 'pinia';
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { TTSManager } from '../audio/tts-manager';
 import {
+  inferGptSoVitsModelsFromFolderFiles,
+  inferGptSoVitsVoicesFromFolderFiles,
+  isAbsoluteFileSystemPath,
   TTS_PROVIDER,
   getGptSoVitsVoiceList,
   getTTSEnabled,
   getTTSVoiceListAsync,
+  normalizeGptSoVitsModelsForStore,
+  normalizeGptSoVitsSwitchMode,
   normalizeGptSoVitsVoicesForStore,
   pickFirstUsableGptSoVitsVoice,
   setTTSEnabled,
+  type GptSoVitsRefAudio,
+  type GptSoVitsModelStoreConfig,
   type TTSSpeakerVoice,
 } from '../audio/tts-config';
 import {
@@ -853,15 +1297,21 @@ import {
   COMMENT_TRIGGER_MODE_OPTIONS,
   DEFAULTS,
   EMOTION_TAGS,
+  EMPTY_MOTION_GROUP_VALUE,
+  LOCAL_LIVE2D_MODEL_PATH,
+  LOCAL_LIVE2D_MODEL_SLOT_ID,
   RECOMMENDED_MODELS,
   SCRIPT_NAME,
   type EmotionTag,
+  type Live2DRuntimeType,
 } from '../core/constants';
 import { createDefaultEmotionConfigs, parseAliasesText, type EmotionConfig } from '../core/emotion';
 import { useSettingsStore } from '../core/settings';
+import { deleteLive2DModel, getLive2DModel, hasLive2DModel, type StoredLive2DModel } from '../db/live2d-models';
 import { matchLive2DExpression, matchLive2DMotion } from '../live2d/expression-motion';
 import { Live2DManager } from '../live2d/manager';
 import { Live2DStage } from '../live2d/stage';
+import { Live2DUploader } from '../live2d/uploader';
 import ModelBrowser from './ModelBrowser.vue';
 
 const props = defineProps<{
@@ -965,6 +1415,14 @@ const commentTriggerModeOptions = COMMENT_TRIGGER_MODE_OPTIONS;
 const apiSources = API_SOURCES;
 const showBrowser = ref(false);
 const customModelUrl = ref(settings.value.modelPath || '');
+const localModelFileInput = ref<HTMLInputElement | null>(null);
+const uploadingLocalModel = ref(false);
+const localModelActionBusy = ref(false);
+const localModelStatus = ref('');
+const localModelError = ref('');
+const localModelInfo = ref<StoredLive2DModel | null>(null);
+const localModelBusy = computed(() => uploadingLocalModel.value || localModelActionBusy.value);
+const localModelExists = computed(() => !!localModelInfo.value);
 
 const diceReferenceSheetOptions = ref<string[]>([]);
 const refreshingDiceSheetOptions = ref(false);
@@ -1194,8 +1652,26 @@ function clearDiceReferenceSheets(): void {
 const ttsEnabled = ref(getTTSEnabled());
 const ttsVoiceList = ref<TTSSpeakerVoice[]>([]);
 const refreshingTtsVoices = ref(false);
+const gptSoVitsModelsJson = ref('');
 const gptSoVitsVoicesJson = ref('');
 const ttsTestText = ref('你好，这是一段 TTS 配音测试。');
+const gptModelImportJsonInputRef = ref<HTMLInputElement | null>(null);
+const gptModelImportFolderInputRef = ref<HTMLInputElement | null>(null);
+const gptImportJsonInputRef = ref<HTMLInputElement | null>(null);
+const gptImportFolderInputRef = ref<HTMLInputElement | null>(null);
+const showGptModelManager = ref(false);
+const showGptModelEditor = ref(false);
+const gptModelManagerSearch = ref('');
+const gptModelManagerModels = ref<GptSoVitsModelStoreConfig[]>([]);
+const gptModelManagerImportJsonInputRef = ref<HTMLInputElement | null>(null);
+const gptModelManagerImportFolderInputRef = ref<HTMLInputElement | null>(null);
+const gptModelEditor = ref<GptSoVitsModelStoreConfig | null>(null);
+const gptModelEditorModelId = ref('');
+const gptModelEditorExpressionRows = ref<Array<{ expression: string; refId: string }>>([]);
+
+const isGptSetModelMode = computed(
+  () => normalizeGptSoVitsSwitchMode(settings.value.gptSoVits?.modelSwitchMode) === 'set_model',
+);
 
 const ttsVoiceHint = computed(() => {
   const providerHint =
@@ -1206,6 +1682,35 @@ const ttsVoiceHint = computed(() => {
         : 'LittleWhiteBox：未指定/未绑定时使用此默认音色。';
   const emptyHint = ttsVoiceList.value.length === 0 ? '（当前音色列表为空）' : '';
   return `${providerHint}${emptyHint}`;
+});
+
+const gptModelSummaryHint = computed(() => {
+  const models = Array.isArray(settings.value.gptSoVits?.models) ? settings.value.gptSoVits.models : [];
+  const enabledCount = models.filter((item: any) => item?.enabled !== false).length;
+  const refCount = models.reduce((sum: number, item: any) => {
+    const refs = Array.isArray(item?.refAudios) ? item.refAudios.length : 0;
+    return sum + refs;
+  }, 0);
+  const defaultSpeaker = String(settings.value.ttsDefaultSpeaker || '').trim() || '未设置';
+  return `模型 ${models.length} 条（启用 ${enabledCount} 条），参考音频 ${refCount} 条，默认音色：${defaultSpeaker}`;
+});
+
+const filteredGptModelManagerModels = computed(() => {
+  const list = Array.isArray(gptModelManagerModels.value) ? gptModelManagerModels.value : [];
+  const keyword = String(gptModelManagerSearch.value || '').trim().toLowerCase();
+  if (!keyword) return list;
+  return list.filter(model => {
+    const text = [
+      String(model?.name || ''),
+      String(model?.desc || ''),
+      String(model?.id || ''),
+      String(model?.paths?.gptWeightsPath || ''),
+      String(model?.paths?.sovitsWeightsPath || ''),
+    ]
+      .join(' ')
+      .toLowerCase();
+    return text.includes(keyword);
+  });
 });
 
 const emotionTags = EMOTION_TAGS;
@@ -1235,6 +1740,7 @@ type MotionOverridePayload = {
   group: string;
   index: number;
   name?: string;
+  explicitEmptyGroup?: boolean;
 };
 
 type MotionSelectOption = {
@@ -1248,18 +1754,34 @@ function normalizeMotionIndex(value: unknown): number {
   return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
 }
 
+function normalizeMotionGroupValue(value: unknown): string {
+  const raw = String(value ?? '').trim();
+  if (raw === EMPTY_MOTION_GROUP_VALUE) return '';
+  return raw;
+}
+
+function isEmptyMotionGroupMarker(value: unknown): boolean {
+  return String(value ?? '').trim() === EMPTY_MOTION_GROUP_VALUE;
+}
+
 function normalizeMotionOverridePayload(payload: MotionOverridePayload): MotionOverridePayload {
+  const explicitEmptyGroup = payload.explicitEmptyGroup === true || isEmptyMotionGroupMarker(payload.group);
   return {
-    group: String(payload.group ?? '').trim(),
+    group: normalizeMotionGroupValue(payload.group),
     index: normalizeMotionIndex(payload.index),
     name: String(payload.name ?? '').trim(),
+    explicitEmptyGroup,
   };
 }
 
 function encodeMotionOption(payload: MotionOverridePayload): string {
   const normalized = normalizeMotionOverridePayload(payload);
-  if (!normalized.group) return '';
-  return JSON.stringify(normalized);
+  const hasExplicitEmpty = normalized.explicitEmptyGroup === true && normalized.group === '';
+  if (!normalized.group && normalized.index === 0 && !hasExplicitEmpty) return '';
+  return JSON.stringify({
+    ...normalized,
+    group: normalized.group === '' && hasExplicitEmpty ? EMPTY_MOTION_GROUP_VALUE : normalized.group,
+  });
 }
 
 function decodeMotionOption(raw: string): MotionOverridePayload | null {
@@ -1268,12 +1790,15 @@ function decodeMotionOption(raw: string): MotionOverridePayload | null {
   try {
     const parsed = JSON.parse(text) as Partial<MotionOverridePayload>;
     if (!parsed || typeof parsed !== 'object') return null;
-    const group = String(parsed.group ?? '').trim();
-    if (!group) return null;
+    const explicitEmptyGroup = isEmptyMotionGroupMarker((parsed as any).group);
+    const group = normalizeMotionGroupValue(parsed.group ?? '');
+    const index = normalizeMotionIndex(parsed.index);
+    if (!group && index === 0 && !explicitEmptyGroup) return null;
     return {
       group,
-      index: normalizeMotionIndex(parsed.index),
+      index,
       name: String(parsed.name ?? '').trim(),
+      explicitEmptyGroup,
     };
   } catch {
     return null;
@@ -1281,12 +1806,15 @@ function decodeMotionOption(raw: string): MotionOverridePayload | null {
 }
 
 function resolveMotionOverridePayload(cfg: EmotionConfig): MotionOverridePayload | null {
-  const overrideGroup = String(cfg?.live2dMotion?.group || '').trim();
-  if (!overrideGroup) return null;
+  const rawGroup = String(cfg?.live2dMotion?.group ?? '');
+  const explicitEmptyGroup = isEmptyMotionGroupMarker(rawGroup);
+  const overrideGroup = normalizeMotionGroupValue(rawGroup);
   const overrideIndex = normalizeMotionIndex(cfg?.live2dMotion?.index);
+  const hasExplicitOverride = explicitEmptyGroup || !!overrideGroup || overrideIndex > 0;
+  if (!hasExplicitOverride) return null;
 
   const exactByGroupIndex = live2dMotions.value.find((motion) => {
-    const group = String(motion?.group ?? '').trim();
+    const group = normalizeMotionGroupValue(motion?.group);
     const index = normalizeMotionIndex(motion?.index);
     return group === overrideGroup && index === overrideIndex;
   });
@@ -1300,24 +1828,27 @@ function resolveMotionOverridePayload(cfg: EmotionConfig): MotionOverridePayload
 
   // 兼容旧配置：group 字段历史上可能被写成 motion name。
   const lower = overrideGroup.toLowerCase();
-  const byName =
-    live2dMotions.value.find((motion) => {
-      const name = String(motion?.name ?? '').trim().toLowerCase();
-      const index = normalizeMotionIndex(motion?.index);
-      return name === lower && index === overrideIndex;
-    }) ||
-    live2dMotions.value.find((motion) => String(motion?.name ?? '').trim().toLowerCase() === lower);
-  if (byName) {
-    return normalizeMotionOverridePayload({
-      group: byName.group,
-      index: byName.index,
-      name: byName.name,
-    });
+  if (lower) {
+    const byName =
+      live2dMotions.value.find((motion) => {
+        const name = String(motion?.name ?? '').trim().toLowerCase();
+        const index = normalizeMotionIndex(motion?.index);
+        return name === lower && index === overrideIndex;
+      }) ||
+      live2dMotions.value.find((motion) => String(motion?.name ?? '').trim().toLowerCase() === lower);
+    if (byName) {
+      return normalizeMotionOverridePayload({
+        group: byName.group,
+        index: byName.index,
+        name: byName.name,
+      });
+    }
   }
 
   return normalizeMotionOverridePayload({
     group: overrideGroup,
     index: overrideIndex,
+    explicitEmptyGroup,
   });
 }
 
@@ -1344,7 +1875,8 @@ function setMotionOverrideValue(cfg: EmotionConfig, rawValue: unknown): void {
     cfg.live2dMotion.index = 0;
     return;
   }
-  cfg.live2dMotion.group = parsed.group;
+  cfg.live2dMotion.group =
+    parsed.group === '' && parsed.explicitEmptyGroup === true ? EMPTY_MOTION_GROUP_VALUE : parsed.group;
   cfg.live2dMotion.index = parsed.index;
 }
 
@@ -1358,14 +1890,13 @@ const live2dMotionSelectOptions = computed<Array<MotionSelectOption>>(() => {
   const options: MotionSelectOption[] = [];
 
   for (const motion of live2dMotions.value) {
-    const group = String(motion?.group ?? '').trim();
-    if (!group) continue;
+    const group = normalizeMotionGroupValue(motion?.group);
     const index = normalizeMotionIndex(motion?.index);
     const name = String(motion?.name ?? '').trim();
-    const value = encodeMotionOption({ group, index, name });
+    const value = encodeMotionOption({ group, index, name, explicitEmptyGroup: group === '' });
     if (!value || seen.has(value)) continue;
     seen.add(value);
-    const groupLabel = `${group}#${index}`;
+    const groupLabel = `${group || '(空动作组)'}#${index}`;
     const safeName = name || '(未命名动作)';
     options.push({
       key: `motion_${groupLabel}_${safeName}`.replace(/\s+/g, '_'),
@@ -1375,15 +1906,19 @@ const live2dMotionSelectOptions = computed<Array<MotionSelectOption>>(() => {
   }
 
   for (const group of live2dMotionGroups.value) {
-    const groupName = String(group?.name ?? '').trim();
-    if (!groupName) continue;
-    const value = encodeMotionOption({ group: groupName, index: 0 });
+    const groupName = normalizeMotionGroupValue(group?.name);
+    const value = encodeMotionOption({
+      group: groupName,
+      index: 0,
+      explicitEmptyGroup: groupName === '',
+    });
     if (!value || seen.has(value)) continue;
     seen.add(value);
+    const groupLabel = groupName || '(空动作组)';
     options.push({
-      key: `group_${groupName}_${group.count}`.replace(/\s+/g, '_'),
+      key: `group_${groupLabel}_${group.count}`.replace(/\s+/g, '_'),
       value,
-      label: `${groupName}（动作组 ${group.count}）`,
+      label: `${groupLabel}（动作组 ${group.count}）`,
     });
   }
 
@@ -1854,6 +2389,125 @@ async function testConnection() {
   }
 }
 
+function formatFileSize(fileSize: unknown): string {
+  const bytes = Number(fileSize || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
+
+function formatLocalUploadTime(timestamp: unknown): string {
+  const value = Number(timestamp || 0);
+  if (!Number.isFinite(value) || value <= 0) return '未知';
+  try {
+    return new Date(value).toLocaleString();
+  } catch {
+    return '未知';
+  }
+}
+
+function runtimeLabel(runtimeType: unknown): string {
+  const runtime = String(runtimeType || '').trim().toLowerCase() as Live2DRuntimeType;
+  if (runtime === 'cubism5') return 'cubism5';
+  return 'legacy';
+}
+
+async function refreshLocalModelInfo(): Promise<void> {
+  try {
+    const model = await getLive2DModel(LOCAL_LIVE2D_MODEL_SLOT_ID);
+    localModelInfo.value = model;
+    if (!model && settings.value.modelPath === LOCAL_LIVE2D_MODEL_PATH) {
+      localModelStatus.value = '当前本地槽位为空，请先上传 ZIP 模型。';
+    } else if (model) {
+      localModelStatus.value = `本地模型槽位就绪：${model.fileName}`;
+    }
+  } catch (e) {
+    localModelInfo.value = null;
+    localModelError.value = `读取本地模型失败: ${e instanceof Error ? e.message : String(e)}`;
+  }
+}
+
+function triggerLocalModelUpload(): void {
+  localModelError.value = '';
+  localModelStatus.value = '';
+  const inputEl = localModelFileInput.value;
+  if (!inputEl) return;
+  inputEl.value = '';
+  inputEl.click();
+}
+
+async function onLocalModelFileChange(event: Event): Promise<void> {
+  const inputEl = event.target as HTMLInputElement | null;
+  const file = inputEl?.files?.[0];
+  if (!file) return;
+
+  uploadingLocalModel.value = true;
+  localModelError.value = '';
+  localModelStatus.value = `正在解析 ${file.name}...`;
+
+  try {
+    const storedModel = await Live2DUploader.uploadZip(file);
+    localModelStatus.value = `上传成功：${storedModel.fileName}`;
+    await refreshLocalModelInfo();
+    settings.value.modelPath = LOCAL_LIVE2D_MODEL_PATH;
+    customModelUrl.value = LOCAL_LIVE2D_MODEL_PATH;
+    emit('model-change', LOCAL_LIVE2D_MODEL_PATH);
+    toastr.success('本地模型上传成功，已切换到本地模型');
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    localModelError.value = `上传失败：${message}`;
+    localModelStatus.value = '';
+    toastr.error(`本地模型上传失败：${message}`);
+  } finally {
+    uploadingLocalModel.value = false;
+    if (inputEl) inputEl.value = '';
+  }
+}
+
+async function useUploadedModel(): Promise<void> {
+  localModelActionBusy.value = true;
+  localModelError.value = '';
+  try {
+    const exists = await hasLive2DModel(LOCAL_LIVE2D_MODEL_SLOT_ID);
+    if (!exists) {
+      localModelStatus.value = '当前没有可用的本地模型，请先上传 ZIP。';
+      toastr.warning('当前没有可用的本地模型，请先上传 ZIP');
+      return;
+    }
+    await refreshLocalModelInfo();
+    settings.value.modelPath = LOCAL_LIVE2D_MODEL_PATH;
+    customModelUrl.value = LOCAL_LIVE2D_MODEL_PATH;
+    localModelStatus.value = '已切换到本地模型。';
+    emit('model-change', LOCAL_LIVE2D_MODEL_PATH);
+  } catch (e) {
+    localModelError.value = `切换本地模型失败: ${e instanceof Error ? e.message : String(e)}`;
+  } finally {
+    localModelActionBusy.value = false;
+  }
+}
+
+async function clearUploadedModel(): Promise<void> {
+  localModelActionBusy.value = true;
+  localModelError.value = '';
+  try {
+    await deleteLive2DModel(LOCAL_LIVE2D_MODEL_SLOT_ID);
+    localModelInfo.value = null;
+    localModelStatus.value = '已清除本地模型槽位。';
+
+    if (settings.value.modelPath === LOCAL_LIVE2D_MODEL_PATH) {
+      settings.value.modelPath = DEFAULTS.MODEL_PATH;
+      customModelUrl.value = DEFAULTS.MODEL_PATH;
+      emit('model-change', DEFAULTS.MODEL_PATH);
+    }
+    toastr.success('已清除本地模型');
+  } catch (e) {
+    localModelError.value = `清除失败: ${e instanceof Error ? e.message : String(e)}`;
+  } finally {
+    localModelActionBusy.value = false;
+  }
+}
+
 function selectModel(path: string) {
   settings.value.modelPath = path;
   customModelUrl.value = path;
@@ -2064,6 +2718,826 @@ async function refreshTtsVoices() {
   }
 }
 
+function normalizePathSepLocal(input: unknown): string {
+  return String(input || '').replace(/\\/g, '/').trim();
+}
+
+function onGptSwitchModeChange(): void {
+  settings.value.gptSoVits.modelSwitchMode = normalizeGptSoVitsSwitchMode(settings.value.gptSoVits.modelSwitchMode);
+}
+
+function onGptRootDirChange(): void {
+  const nextRoot = normalizePathSepLocal(settings.value.gptSoVits.rootDir);
+  settings.value.gptSoVits.rootDir = nextRoot;
+  settings.value.gptSoVits.importPathPrefix = nextRoot;
+}
+
+function onGptImportPrefixChange(): void {
+  const nextPrefix = normalizePathSepLocal(settings.value.gptSoVits.importPathPrefix);
+  settings.value.gptSoVits.importPathPrefix = nextPrefix;
+  settings.value.gptSoVits.rootDir = nextPrefix;
+}
+
+function modelToLegacyVoice(model: any): any | null {
+  if (!model) return null;
+  const refs = Array.isArray(model.refAudios) ? model.refAudios : [];
+  const defRef =
+    refs.find(item => String(item?.id || '').trim() === String(model.defaultRefId || '').trim()) ||
+    refs.find(item => String(item?.path || '').trim() === String(model?.paths?.defaultRefAudioPath || '').trim()) ||
+    refs[0] ||
+    null;
+  const params = model?.params || {};
+  return {
+    name: String(model.name || '').trim(),
+    desc: String(model.desc || '').trim(),
+    refAudioPath: String(defRef?.path || model?.paths?.defaultRefAudioPath || '').trim(),
+    promptText: String(defRef?.promptText || params.promptText || '').trim(),
+    promptLang: String(defRef?.promptLang || params.promptLang || 'zh').trim() || 'zh',
+    textLang: String(defRef?.textLang || params.textLang || 'auto').trim() || 'auto',
+    gptWeightsPath: String(model?.paths?.gptWeightsPath || '').trim(),
+    sovitsWeightsPath: String(model?.paths?.sovitsWeightsPath || '').trim(),
+    modelSwitchMode: String(params.modelSwitchMode || settings.value.gptSoVits.modelSwitchMode || 'set_weights').trim(),
+    setModelEndpoint: String(params.setModelEndpoint || settings.value.gptSoVits.setModelEndpoint || '/set_model').trim(),
+    strictWeightSwitch: !!(
+      params.strictWeightSwitch ??
+      settings.value.gptSoVits.strictWeightSwitch
+    ),
+  };
+}
+
+function syncLegacyVoicesFromModels(models: any[]): any[] {
+  return (Array.isArray(models) ? models : [])
+    .map(modelToLegacyVoice)
+    .filter(Boolean)
+    .filter(voice => String((voice as any)?.name || '').trim());
+}
+
+function setGptSoVitsModelsTextarea(models: any[]): void {
+  try {
+    gptSoVitsModelsJson.value = JSON.stringify(models || [], null, 2);
+  } catch {
+    gptSoVitsModelsJson.value = '[]';
+  }
+}
+
+function getGptModelsFromTextarea(): GptSoVitsModelStoreConfig[] {
+  const raw = gptSoVitsModelsJson.value || '[]';
+  const parsed = JSON.parse(raw);
+  if (!Array.isArray(parsed)) {
+    throw new Error('models must be array');
+  }
+  return normalizeGptSoVitsModelsForStore(parsed);
+}
+
+function setGptSoVitsVoicesTextarea(voices: any[]): void {
+  try {
+    gptSoVitsVoicesJson.value = JSON.stringify(voices || [], null, 2);
+  } catch {
+    gptSoVitsVoicesJson.value = '[]';
+  }
+}
+
+function getGptVoicesFromTextarea() {
+  const raw = gptSoVitsVoicesJson.value || '[]';
+  const parsed = JSON.parse(raw);
+  if (!Array.isArray(parsed)) {
+    throw new Error('voices must be array');
+  }
+  return normalizeGptSoVitsVoicesForStore(parsed);
+}
+
+function mergeGptSoVitsVoicesByName(existing: any[], incoming: any[]): any[] {
+  const out = Array.isArray(existing) ? existing.slice() : [];
+  const used = new Set(out.map(v => String(v?.name || '').trim()).filter(Boolean));
+
+  for (const voiceRaw of Array.isArray(incoming) ? incoming : []) {
+    if (!voiceRaw) continue;
+    const voice = { ...voiceRaw };
+    const base = String(voice.name || '新音色').trim() || '新音色';
+    let name = base;
+    let idx = 2;
+    while (used.has(name)) {
+      name = `${base}_${idx++}`;
+    }
+    voice.name = name;
+    used.add(name);
+    out.push(voice);
+  }
+
+  return out;
+}
+
+function mergeGptSoVitsModelsByName(existing: any[], incoming: any[]): any[] {
+  const out = Array.isArray(existing) ? existing.slice() : [];
+  const used = new Set(out.map(v => String(v?.name || '').trim()).filter(Boolean));
+
+  for (const modelRaw of Array.isArray(incoming) ? incoming : []) {
+    if (!modelRaw) continue;
+    const model = { ...modelRaw };
+    const base = String(model.name || '新模型').trim() || '新模型';
+    let name = base;
+    let idx = 2;
+    while (used.has(name)) {
+      name = `${base}_${idx++}`;
+    }
+    model.name = name;
+    used.add(name);
+    out.push(model);
+  }
+
+  return out;
+}
+
+function deepCloneGptModels(models: GptSoVitsModelStoreConfig[]): GptSoVitsModelStoreConfig[] {
+  try {
+    return JSON.parse(JSON.stringify(Array.isArray(models) ? models : [])) as GptSoVitsModelStoreConfig[];
+  } catch {
+    return Array.isArray(models) ? models.slice() : [];
+  }
+}
+
+function createGptSoVitsModelTemplateConfig(): GptSoVitsModelStoreConfig {
+  return {
+    id: `model_${Date.now().toString(36)}`,
+    name: '新模型',
+    enabled: true,
+    desc: '手动添加',
+    paths: {
+      gptWeightsPath: '',
+      sovitsWeightsPath: '',
+      defaultRefAudioPath: '',
+    },
+    params: {
+      promptText: '',
+      promptLang: 'zh',
+      textLang: 'zh',
+      textSplitMethod: 'cut5',
+      speedFactor: 1,
+      mediaType: 'wav',
+      streamingMode: false,
+      modelSwitchMode: normalizeGptSoVitsSwitchMode(settings.value.gptSoVits.modelSwitchMode || 'set_weights'),
+      setModelEndpoint: String(settings.value.gptSoVits.setModelEndpoint || '/set_model').trim() || '/set_model',
+      strictWeightSwitch: !!settings.value.gptSoVits.strictWeightSwitch,
+    },
+    refAudios: [],
+    defaultRefId: '',
+    expressionRefMap: {},
+  };
+}
+
+function syncGptModelManagerFromSettings(): void {
+  const normalized = normalizeGptSoVitsModelsForStore(settings.value.gptSoVits.models || []);
+  gptModelManagerModels.value = deepCloneGptModels(normalized);
+}
+
+function openGptModelManager(): void {
+  syncGptModelManagerFromSettings();
+  gptModelManagerSearch.value = '';
+  closeGptModelEditor();
+  showGptModelManager.value = true;
+}
+
+function closeGptModelManager(): void {
+  showGptModelManager.value = false;
+  closeGptModelEditor();
+}
+
+async function applyGptModelManagerModelsToSettings(showSuccessMessage = ''): Promise<void> {
+  const normalized = normalizeGptSoVitsModelsForStore(gptModelManagerModels.value || []);
+  const legacyVoices = syncLegacyVoicesFromModels(normalized);
+
+  gptModelManagerModels.value = deepCloneGptModels(normalized);
+  settings.value.gptSoVits.models = normalized as any;
+  settings.value.gptSoVits.voices = legacyVoices as any;
+  setGptSoVitsModelsTextarea(normalized as any[]);
+  setGptSoVitsVoicesTextarea(legacyVoices as any[]);
+
+  const firstUsable = pickFirstUsableGptSoVitsVoice(getGptSoVitsVoiceList());
+  if (!settings.value.ttsDefaultSpeaker && firstUsable?.name) {
+    settings.value.ttsDefaultSpeaker = firstUsable.name;
+  }
+
+  await refreshTtsVoices();
+  if (showSuccessMessage) {
+    toastr.success(showSuccessMessage);
+  }
+}
+
+async function saveGptModelManager(): Promise<void> {
+  await applyGptModelManagerModelsToSettings(`GPT-SoVITS 模型列表已保存：${gptModelManagerModels.value.length} 条`);
+}
+
+async function saveGptModelManagerAndClose(): Promise<void> {
+  await applyGptModelManagerModelsToSettings(`GPT-SoVITS 模型列表已保存：${gptModelManagerModels.value.length} 条`);
+  closeGptModelManager();
+}
+
+function addGptModelManagerModel(): void {
+  const merged = mergeGptSoVitsModelsByName(gptModelManagerModels.value, [createGptSoVitsModelTemplateConfig()]);
+  gptModelManagerModels.value = deepCloneGptModels(normalizeGptSoVitsModelsForStore(merged));
+  toastr.success('已添加一条模型模板');
+}
+
+function getGptModelManagerIndexById(modelId: string): number {
+  const targetId = String(modelId || '').trim();
+  if (!targetId) return -1;
+  return gptModelManagerModels.value.findIndex(item => String(item?.id || '').trim() === targetId);
+}
+
+function removeGptModelManagerModel(modelId: string): void {
+  const index = getGptModelManagerIndexById(modelId);
+  if (index < 0) return;
+  gptModelManagerModels.value.splice(index, 1);
+  if (gptModelEditorModelId.value === modelId) {
+    closeGptModelEditor();
+  }
+}
+
+function duplicateGptModelManagerModel(modelId: string): void {
+  const index = getGptModelManagerIndexById(modelId);
+  if (index < 0) return;
+
+  const source = gptModelManagerModels.value[index];
+  const cloned = deepCloneGptModels([source])[0] || createGptSoVitsModelTemplateConfig();
+  cloned.id = `${String(source?.id || 'model').trim() || 'model'}_${Date.now().toString(36)}`;
+
+  const merged = mergeGptSoVitsModelsByName(gptModelManagerModels.value, [cloned]);
+  gptModelManagerModels.value = deepCloneGptModels(normalizeGptSoVitsModelsForStore(merged));
+  toastr.success('模型已复制');
+}
+
+function setGptModelManagerDefaultSpeaker(model: GptSoVitsModelStoreConfig): void {
+  const name = String(model?.name || '').trim();
+  if (!name) {
+    toastr.error('请先填写模型名称');
+    return;
+  }
+  settings.value.ttsDefaultSpeaker = name;
+  toastr.success(`已设默认音色：${name}`);
+}
+
+async function testGptModelManagerModel(modelId: string): Promise<void> {
+  const index = getGptModelManagerIndexById(modelId);
+  if (index < 0) return;
+  const model = gptModelManagerModels.value[index];
+  const name = String(model?.name || '').trim();
+  if (!name) {
+    toastr.error('模型名称为空，无法试听');
+    return;
+  }
+  settings.value.ttsDefaultSpeaker = name;
+  await applyGptModelManagerModelsToSettings('');
+  await testTts();
+}
+
+function openGptModelManagerImportJson(): void {
+  gptModelManagerImportJsonInputRef.value?.click();
+}
+
+function openGptModelManagerImportFolder(): void {
+  gptModelManagerImportFolderInputRef.value?.click();
+}
+
+async function onGptModelManagerImportJsonChange(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement | null;
+  const file = input?.files?.[0];
+  if (!file) return;
+
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(String(text || '[]'));
+    if (!Array.isArray(parsed)) {
+      toastr.error('导入失败：JSON 需为数组');
+      return;
+    }
+
+    const normalizedIncoming = normalizeGptSoVitsModelsForStore(parsed);
+    const merged = mergeGptSoVitsModelsByName(gptModelManagerModels.value, normalizedIncoming);
+    gptModelManagerModels.value = deepCloneGptModels(normalizeGptSoVitsModelsForStore(merged));
+    toastr.success(`已导入模型：${normalizedIncoming.length} 条（请点击保存）`);
+  } catch (e) {
+    console.warn(`[${SCRIPT_NAME}] GPT-SoVITS 模型管理器 JSON 导入失败:`, e);
+    toastr.error('导入失败：JSON 解析错误');
+  } finally {
+    if (input) input.value = '';
+  }
+}
+
+async function onGptModelManagerImportFolderChange(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement | null;
+  const fileList = input?.files;
+  if (!fileList || fileList.length === 0) return;
+
+  try {
+    const prefix = normalizePathSepLocal(settings.value.gptSoVits.importPathPrefix || settings.value.gptSoVits.rootDir || '');
+    const inferred = inferGptSoVitsModelsFromFolderFiles(fileList as any, prefix);
+    if (!inferred || inferred.length === 0) {
+      toastr.warning('未识别到可导入模型（至少需要参考音频）');
+      return;
+    }
+
+    const merged = mergeGptSoVitsModelsByName(gptModelManagerModels.value, inferred);
+    gptModelManagerModels.value = deepCloneGptModels(normalizeGptSoVitsModelsForStore(merged));
+
+    const hasRelativePath = inferred.some(model => {
+      const p = String(model?.paths?.defaultRefAudioPath || '').trim();
+      return p && !isAbsoluteFileSystemPath(p);
+    });
+    let msg = `已从文件夹导入模型：${inferred.length} 条（请点击保存）`;
+    if (hasRelativePath && !prefix) {
+      msg += '（包含相对路径，建议填写路径前缀）';
+    }
+    toastr.success(msg);
+  } catch (e) {
+    console.warn(`[${SCRIPT_NAME}] GPT-SoVITS 模型管理器文件夹导入失败:`, e);
+    toastr.error('文件夹导入失败');
+  } finally {
+    if (input) input.value = '';
+  }
+}
+
+function exportGptModelManagerModels(): void {
+  try {
+    const normalized = normalizeGptSoVitsModelsForStore(gptModelManagerModels.value || []);
+    const blob = new Blob([JSON.stringify(normalized, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'gpt_sovits_models.json';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toastr.success('已导出 gpt_sovits_models.json');
+  } catch (e) {
+    console.warn(`[${SCRIPT_NAME}] GPT-SoVITS 模型管理器导出失败:`, e);
+    toastr.error('导出失败');
+  }
+}
+
+function normalizeGptModelEditorRefAudio(raw: any, index: number): GptSoVitsRefAudio {
+  const id = String(raw?.id || `ref_${index + 1}`).trim() || `ref_${index + 1}`;
+  return {
+    id,
+    name: String(raw?.name || id).trim() || id,
+    path: normalizePathSepLocal(raw?.path || ''),
+    promptText: String(raw?.promptText || '').trim(),
+    promptLang: String(raw?.promptLang || 'zh').trim() || 'zh',
+    textLang: String(raw?.textLang || 'auto').trim() || 'auto',
+  };
+}
+
+function ensureGptModelEditorStructure(): void {
+  const model = gptModelEditor.value;
+  if (!model) return;
+
+  model.paths = {
+    gptWeightsPath: normalizePathSepLocal(model?.paths?.gptWeightsPath || ''),
+    sovitsWeightsPath: normalizePathSepLocal(model?.paths?.sovitsWeightsPath || ''),
+    defaultRefAudioPath: normalizePathSepLocal(model?.paths?.defaultRefAudioPath || ''),
+  };
+  model.params = {
+    promptText: String(model?.params?.promptText || '').trim(),
+    promptLang: String(model?.params?.promptLang || 'zh').trim() || 'zh',
+    textLang: String(model?.params?.textLang || 'auto').trim() || 'auto',
+    textSplitMethod: String(model?.params?.textSplitMethod || 'cut5').trim() || 'cut5',
+    speedFactor: Number.isFinite(Number(model?.params?.speedFactor)) ? Number(model?.params?.speedFactor) : 1,
+    mediaType: String(model?.params?.mediaType || 'wav').trim() || 'wav',
+    streamingMode: !!model?.params?.streamingMode,
+    modelSwitchMode: normalizeGptSoVitsSwitchMode(model?.params?.modelSwitchMode || 'set_weights'),
+    setModelEndpoint: String(model?.params?.setModelEndpoint || '/set_model').trim() || '/set_model',
+    strictWeightSwitch: !!model?.params?.strictWeightSwitch,
+  };
+  model.refAudios = (Array.isArray(model.refAudios) ? model.refAudios : []).map((item, index) =>
+    normalizeGptModelEditorRefAudio(item, index),
+  );
+  if (!model.defaultRefId && model.refAudios.length > 0) {
+    model.defaultRefId = model.refAudios[0].id;
+  }
+  if (model.defaultRefId && !model.refAudios.some(item => item.id === model.defaultRefId)) {
+    model.defaultRefId = model.refAudios[0]?.id || '';
+  }
+  model.expressionRefMap = model.expressionRefMap && typeof model.expressionRefMap === 'object'
+    ? model.expressionRefMap
+    : {};
+}
+
+function syncGptModelEditorExpressionRowsFromModel(): void {
+  const model = gptModelEditor.value;
+  if (!model) {
+    gptModelEditorExpressionRows.value = [];
+    return;
+  }
+  const rows: Array<{ expression: string; refId: string }> = [];
+  const map = model.expressionRefMap && typeof model.expressionRefMap === 'object' ? model.expressionRefMap : {};
+  Object.entries(map).forEach(([expression, refId]) => {
+    const exprText = String(expression || '').trim();
+    const targetRefId = String(refId || '').trim();
+    if (!exprText || !targetRefId) return;
+    rows.push({ expression: exprText, refId: targetRefId });
+  });
+  gptModelEditorExpressionRows.value = rows;
+}
+
+function applyGptModelEditorExpressionRowsToModel(): void {
+  const model = gptModelEditor.value;
+  if (!model) return;
+  const validRefIds = new Set(model.refAudios.map(item => String(item?.id || '').trim()).filter(Boolean));
+  const nextMap: Record<string, string> = {};
+  for (const row of gptModelEditorExpressionRows.value) {
+    const expression = String(row?.expression || '').trim();
+    const refId = String(row?.refId || '').trim();
+    if (!expression || !refId) continue;
+    if (!validRefIds.has(refId)) continue;
+    nextMap[expression] = refId;
+  }
+  model.expressionRefMap = nextMap;
+}
+
+function openGptModelEditor(modelId: string): void {
+  const index = getGptModelManagerIndexById(modelId);
+  if (index < 0) return;
+  const source = gptModelManagerModels.value[index];
+  gptModelEditor.value = deepCloneGptModels([source])[0] || null;
+  gptModelEditorModelId.value = String(source?.id || '').trim();
+  ensureGptModelEditorStructure();
+  syncGptModelEditorExpressionRowsFromModel();
+  showGptModelEditor.value = true;
+}
+
+function closeGptModelEditor(): void {
+  showGptModelEditor.value = false;
+  gptModelEditor.value = null;
+  gptModelEditorModelId.value = '';
+  gptModelEditorExpressionRows.value = [];
+}
+
+function addGptModelEditorRefAudio(): void {
+  const model = gptModelEditor.value;
+  if (!model) return;
+  ensureGptModelEditorStructure();
+
+  const used = new Set(model.refAudios.map(item => String(item.id || '').trim()).filter(Boolean));
+  const base = `ref_${model.refAudios.length + 1}`;
+  let nextId = base;
+  let index = 2;
+  while (used.has(nextId)) {
+    nextId = `${base}_${index++}`;
+  }
+
+  model.refAudios.push({
+    id: nextId,
+    name: `参考音频${model.refAudios.length + 1}`,
+    path: '',
+    promptText: String(model.params.promptText || '').trim(),
+    promptLang: String(model.params.promptLang || 'zh').trim() || 'zh',
+    textLang: String(model.params.textLang || 'auto').trim() || 'auto',
+  });
+  if (!model.defaultRefId) {
+    model.defaultRefId = nextId;
+  }
+}
+
+function removeGptModelEditorRefAudio(refIndex: number): void {
+  const model = gptModelEditor.value;
+  if (!model) return;
+  if (refIndex < 0 || refIndex >= model.refAudios.length) return;
+
+  const removedId = String(model.refAudios[refIndex]?.id || '').trim();
+  model.refAudios.splice(refIndex, 1);
+
+  if (removedId && model.defaultRefId === removedId) {
+    model.defaultRefId = model.refAudios[0]?.id || '';
+  }
+  if (removedId) {
+    gptModelEditorExpressionRows.value = gptModelEditorExpressionRows.value.filter(row => row.refId !== removedId);
+  }
+}
+
+function setGptModelEditorDefaultRef(refId: string): void {
+  const model = gptModelEditor.value;
+  if (!model) return;
+  const id = String(refId || '').trim();
+  if (!id) return;
+  model.defaultRefId = id;
+}
+
+function addGptModelEditorExpressionRow(): void {
+  const model = gptModelEditor.value;
+  if (!model) return;
+  const fallbackRefId = String(model.defaultRefId || model.refAudios[0]?.id || '').trim();
+  gptModelEditorExpressionRows.value.push({
+    expression: '',
+    refId: fallbackRefId,
+  });
+}
+
+function removeGptModelEditorExpressionRow(index: number): void {
+  if (index < 0 || index >= gptModelEditorExpressionRows.value.length) return;
+  gptModelEditorExpressionRows.value.splice(index, 1);
+}
+
+function saveGptModelEditor(): void {
+  const model = gptModelEditor.value;
+  if (!model) return;
+  if (!String(model.name || '').trim()) {
+    toastr.error('模型名称不能为空');
+    return;
+  }
+  ensureGptModelEditorStructure();
+  applyGptModelEditorExpressionRowsToModel();
+
+  const targetIndex = getGptModelManagerIndexById(gptModelEditorModelId.value);
+  if (targetIndex < 0) {
+    toastr.error('保存失败：模型不存在');
+    return;
+  }
+
+  const list = gptModelManagerModels.value.slice();
+  list[targetIndex] = deepCloneGptModels([model])[0] || model;
+  gptModelManagerModels.value = deepCloneGptModels(normalizeGptSoVitsModelsForStore(list));
+  toastr.success('模型编辑已保存到草稿（请点击保存）');
+  closeGptModelEditor();
+}
+
+function openGptModelImportJson(): void {
+  gptModelImportJsonInputRef.value?.click();
+}
+
+function openGptModelImportFolder(): void {
+  gptModelImportFolderInputRef.value?.click();
+}
+
+function openGptImportJson(): void {
+  gptImportJsonInputRef.value?.click();
+}
+
+function openGptImportFolder(): void {
+  gptImportFolderInputRef.value?.click();
+}
+
+async function onGptModelImportJsonChange(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement | null;
+  const file = input?.files?.[0];
+  if (!file) return;
+
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(String(text || '[]'));
+    if (!Array.isArray(parsed)) {
+      toastr.error('导入失败：JSON 需为数组');
+      return;
+    }
+
+    const normalizedIncoming = normalizeGptSoVitsModelsForStore(parsed);
+    const existingNormalized = normalizeGptSoVitsModelsForStore(settings.value.gptSoVits.models || []);
+    const merged = mergeGptSoVitsModelsByName(existingNormalized, normalizedIncoming);
+    const legacyVoices = syncLegacyVoicesFromModels(merged);
+
+    settings.value.gptSoVits.models = merged as any;
+    settings.value.gptSoVits.voices = legacyVoices as any;
+    setGptSoVitsModelsTextarea(merged);
+    setGptSoVitsVoicesTextarea(legacyVoices);
+    syncGptModelManagerFromSettings();
+    await refreshTtsVoices();
+
+    toastr.success(`已导入模型：${normalizedIncoming.length} 条`);
+  } catch (e) {
+    console.warn(`[${SCRIPT_NAME}] GPT-SoVITS 模型 JSON 导入失败:`, e);
+    toastr.error('导入失败：JSON 解析错误');
+  } finally {
+    if (input) input.value = '';
+  }
+}
+
+async function onGptModelImportFolderChange(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement | null;
+  const fileList = input?.files;
+  if (!fileList || fileList.length === 0) return;
+
+  try {
+    const prefix = normalizePathSepLocal(settings.value.gptSoVits.importPathPrefix || settings.value.gptSoVits.rootDir || '');
+    const inferred = inferGptSoVitsModelsFromFolderFiles(fileList as any, prefix);
+    if (!inferred || inferred.length === 0) {
+      toastr.warning('未识别到可导入模型（至少需要参考音频）');
+      return;
+    }
+
+    const existingNormalized = normalizeGptSoVitsModelsForStore(settings.value.gptSoVits.models || []);
+    const merged = mergeGptSoVitsModelsByName(existingNormalized, inferred);
+    const legacyVoices = syncLegacyVoicesFromModels(merged);
+
+    settings.value.gptSoVits.models = merged as any;
+    settings.value.gptSoVits.voices = legacyVoices as any;
+    setGptSoVitsModelsTextarea(merged);
+    setGptSoVitsVoicesTextarea(legacyVoices);
+    syncGptModelManagerFromSettings();
+    await refreshTtsVoices();
+
+    const hasRelativePath = inferred.some(model => {
+      const p = String(model?.paths?.defaultRefAudioPath || '').trim();
+      return p && !isAbsoluteFileSystemPath(p);
+    });
+    let msg = `已从文件夹导入模型：${inferred.length} 条`;
+    if (hasRelativePath && !prefix) {
+      msg += '（包含相对路径，建议填写路径前缀）';
+    }
+    toastr.success(msg);
+  } catch (e) {
+    console.warn(`[${SCRIPT_NAME}] GPT-SoVITS 模型文件夹导入失败:`, e);
+    toastr.error('文件夹导入失败');
+  } finally {
+    if (input) input.value = '';
+  }
+}
+
+async function onGptImportJsonChange(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement | null;
+  const file = input?.files?.[0];
+  if (!file) return;
+
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(String(text || '[]'));
+    if (!Array.isArray(parsed)) {
+      toastr.error('导入失败：JSON 需为数组');
+      return;
+    }
+
+    const normalizedIncoming = normalizeGptSoVitsVoicesForStore(parsed);
+    const existingNormalized = normalizeGptSoVitsVoicesForStore(settings.value.gptSoVits.voices || []).voices;
+    const merged = mergeGptSoVitsVoicesByName(existingNormalized, normalizedIncoming.voices);
+
+    settings.value.gptSoVits.voices = merged as any;
+    settings.value.gptSoVits.models = [] as any;
+    setGptSoVitsModelsTextarea([]);
+    setGptSoVitsVoicesTextarea(merged);
+    syncGptModelManagerFromSettings();
+    await refreshTtsVoices();
+
+    let msg = `已导入音色：${normalizedIncoming.voices.length} 条`;
+    if (normalizedIncoming.ignoredCount > 0) msg += `，忽略无效 ${normalizedIncoming.ignoredCount} 条`;
+    if (normalizedIncoming.missingRefCount > 0) msg += `，其中 ${normalizedIncoming.missingRefCount} 条缺 refAudioPath`;
+    toastr.success(msg);
+  } catch (e) {
+    console.warn(`[${SCRIPT_NAME}] GPT-SoVITS 导入 JSON 失败:`, e);
+    toastr.error('导入失败：JSON 解析错误');
+  } finally {
+    if (input) input.value = '';
+  }
+}
+
+async function onGptImportFolderChange(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement | null;
+  const fileList = input?.files;
+  if (!fileList || fileList.length === 0) return;
+
+  try {
+    const prefix = normalizePathSepLocal(settings.value.gptSoVits.importPathPrefix || settings.value.gptSoVits.rootDir || '');
+    const inferred = inferGptSoVitsVoicesFromFolderFiles(fileList as any, prefix);
+    if (!inferred || inferred.length === 0) {
+      toastr.warning('未识别到可导入音色（至少需要参考音频）');
+      return;
+    }
+
+    const normalizedIncoming = normalizeGptSoVitsVoicesForStore(inferred);
+    const existingNormalized = normalizeGptSoVitsVoicesForStore(settings.value.gptSoVits.voices || []).voices;
+    const merged = mergeGptSoVitsVoicesByName(existingNormalized, normalizedIncoming.voices);
+
+    settings.value.gptSoVits.voices = merged as any;
+    settings.value.gptSoVits.models = [] as any;
+    setGptSoVitsModelsTextarea([]);
+    setGptSoVitsVoicesTextarea(merged);
+    syncGptModelManagerFromSettings();
+    await refreshTtsVoices();
+
+    const hasRelativePath = normalizedIncoming.voices.some(v => !isAbsoluteFileSystemPath(v.refAudioPath || ''));
+    let msg = `已从文件夹导入：${normalizedIncoming.voices.length} 条`;
+    if (hasRelativePath && !prefix) {
+      msg += '（包含相对路径，建议填写路径前缀）';
+    }
+    toastr.success(msg);
+  } catch (e) {
+    console.warn(`[${SCRIPT_NAME}] GPT-SoVITS 文件夹导入失败:`, e);
+    toastr.error('文件夹导入失败');
+  } finally {
+    if (input) input.value = '';
+  }
+}
+
+function exportGptSoVitsVoices(): void {
+  try {
+    const voices = settings.value.gptSoVits?.voices || [];
+    const blob = new Blob([JSON.stringify(voices, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'gpt_sovits_voices.json';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toastr.success('已导出 gpt_sovits_voices.json');
+  } catch (e) {
+    console.warn(`[${SCRIPT_NAME}] GPT-SoVITS 导出失败:`, e);
+    toastr.error('导出失败');
+  }
+}
+
+function exportGptSoVitsModels(): void {
+  try {
+    const models = settings.value.gptSoVits?.models || [];
+    const blob = new Blob([JSON.stringify(models, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'gpt_sovits_models.json';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toastr.success('已导出 gpt_sovits_models.json');
+  } catch (e) {
+    console.warn(`[${SCRIPT_NAME}] GPT-SoVITS 模型导出失败:`, e);
+    toastr.error('导出失败');
+  }
+}
+
+async function addGptSoVitsModelTemplate(): Promise<void> {
+  try {
+    const current = getGptModelsFromTextarea();
+    const template = createGptSoVitsModelTemplateConfig();
+
+    const merged = mergeGptSoVitsModelsByName(current, [template]);
+    const legacyVoices = syncLegacyVoicesFromModels(merged);
+    settings.value.gptSoVits.models = merged as any;
+    settings.value.gptSoVits.voices = legacyVoices as any;
+    setGptSoVitsModelsTextarea(merged);
+    setGptSoVitsVoicesTextarea(legacyVoices);
+    syncGptModelManagerFromSettings();
+    await refreshTtsVoices();
+    toastr.success('已添加一条模型模板');
+  } catch (e) {
+    console.warn(`[${SCRIPT_NAME}] GPT-SoVITS 添加模型模板失败:`, e);
+    toastr.error('添加模板失败，请先修复 JSON');
+  }
+}
+
+function saveGptSoVitsModels(): void {
+  let parsed: any = null;
+  try {
+    parsed = JSON.parse(gptSoVitsModelsJson.value || '[]');
+  } catch {
+    toastr.error('模型列表 JSON 解析失败');
+    return;
+  }
+  if (!Array.isArray(parsed)) {
+    toastr.error('模型列表必须是数组');
+    return;
+  }
+
+  const normalized = normalizeGptSoVitsModelsForStore(parsed);
+  const legacyVoices = syncLegacyVoicesFromModels(normalized);
+
+  settings.value.gptSoVits.models = normalized as any;
+  settings.value.gptSoVits.voices = legacyVoices as any;
+  setGptSoVitsModelsTextarea(normalized as any[]);
+  setGptSoVitsVoicesTextarea(legacyVoices as any[]);
+  syncGptModelManagerFromSettings();
+
+  const firstUsable = pickFirstUsableGptSoVitsVoice(getGptSoVitsVoiceList());
+  if (!settings.value.ttsDefaultSpeaker && firstUsable?.name) {
+    settings.value.ttsDefaultSpeaker = firstUsable.name;
+  }
+
+  void refreshTtsVoices();
+  toastr.success(`GPT-SoVITS 模型列表已保存：${normalized.length} 条`);
+}
+
+async function addGptSoVitsVoiceTemplate(): Promise<void> {
+  try {
+    const current = getGptVoicesFromTextarea().voices;
+    const template = {
+      name: '新音色',
+      desc: '手动添加',
+      refAudioPath: '',
+      promptText: '',
+      promptLang: 'zh',
+      textLang: 'zh',
+      gptWeightsPath: '',
+      sovitsWeightsPath: '',
+      modelSwitchMode: 'set_weights',
+      setModelEndpoint: '/set_model',
+      strictWeightSwitch: false,
+    };
+    const merged = mergeGptSoVitsVoicesByName(current, [template]);
+    settings.value.gptSoVits.voices = merged as any;
+    settings.value.gptSoVits.models = [] as any;
+    setGptSoVitsModelsTextarea([]);
+    setGptSoVitsVoicesTextarea(merged);
+    syncGptModelManagerFromSettings();
+    await refreshTtsVoices();
+    toastr.success('已添加一条音色模板');
+  } catch (e) {
+    console.warn(`[${SCRIPT_NAME}] GPT-SoVITS 添加模板失败:`, e);
+    toastr.error('添加模板失败，请先修复 JSON');
+  }
+}
+
 function saveGptSoVitsVoices(): void {
   let parsed: any = null;
   try {
@@ -2079,6 +3553,10 @@ function saveGptSoVitsVoices(): void {
 
   const normalized = normalizeGptSoVitsVoicesForStore(parsed);
   settings.value.gptSoVits.voices = normalized.voices as any;
+  settings.value.gptSoVits.models = [] as any;
+  setGptSoVitsModelsTextarea([]);
+  setGptSoVitsVoicesTextarea(normalized.voices as any[]);
+  syncGptModelManagerFromSettings();
 
   const firstUsable = pickFirstUsableGptSoVitsVoice(getGptSoVitsVoiceList());
   if (!settings.value.ttsDefaultSpeaker && firstUsable?.name) {
@@ -2173,27 +3651,55 @@ function applyLipSyncManualParams(): void {
 
 function close() {
   applyLipSyncManualParams();
+  closeGptModelManager();
   emit('close');
 }
 
 watch(
   () => props.visible,
   visible => {
-    if (!visible) return;
+    if (!visible) {
+      closeGptModelManager();
+      return;
+    }
     ensureNumericSettingsIntegrity();
     activeSection.value = 'api';
+    customModelUrl.value = settings.value.modelPath || '';
     showEmotionAdvanced.value = false;
     ttsEnabled.value = getTTSEnabled();
+    localModelStatus.value = '';
+    localModelError.value = '';
     lipSyncManualParamsText.value = Array.isArray(settings.value.lipSyncManualParamIds)
       ? settings.value.lipSyncManualParamIds.join('\n')
       : '';
+    settings.value.gptSoVits.modelSwitchMode = normalizeGptSoVitsSwitchMode(settings.value.gptSoVits.modelSwitchMode);
+    const syncedPrefix = normalizePathSepLocal(
+      settings.value.gptSoVits.importPathPrefix || settings.value.gptSoVits.rootDir || '',
+    );
+    settings.value.gptSoVits.rootDir = syncedPrefix;
+    settings.value.gptSoVits.importPathPrefix = syncedPrefix;
+    settings.value.gptSoVits.setModelEndpoint = String(settings.value.gptSoVits.setModelEndpoint || '/set_model').trim()
+      || '/set_model';
+    if (!Array.isArray((settings.value.gptSoVits as any).models)) {
+      (settings.value.gptSoVits as any).models = [];
+    }
+    if (!Array.isArray((settings.value.gptSoVits as any).voices)) {
+      (settings.value.gptSoVits as any).voices = [];
+    }
+    try {
+      gptSoVitsModelsJson.value = JSON.stringify(settings.value.gptSoVits?.models || [], null, 2);
+    } catch {
+      gptSoVitsModelsJson.value = '[]';
+    }
     try {
       gptSoVitsVoicesJson.value = JSON.stringify(settings.value.gptSoVits?.voices || [], null, 2);
     } catch {
       gptSoVitsVoicesJson.value = '[]';
     }
+    syncGptModelManagerFromSettings();
     void refreshTtsVoices();
     refreshDiceReferenceSheetOptions();
+    void refreshLocalModelInfo();
   },
   { immediate: true },
 );
@@ -2520,6 +4026,20 @@ watch(
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.hidden-file-input {
+  display: none;
+}
+
+.local-model-info {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 12px;
+  line-height: 1.45;
+  color: #e8e8e8;
 }
 
 .model-btn {
@@ -2915,6 +4435,135 @@ watch(
   @include theme.ark-scrollbar;
 }
 
+.gpt-model-dialog {
+  width: min(1240px, calc(100vw - 24px));
+}
+
+.gpt-model-editor-dialog {
+  width: min(1080px, calc(100vw - 24px));
+}
+
+.gpt-model-header {
+  align-items: flex-start;
+}
+
+.gpt-model-header-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.gpt-model-header-actions .btn {
+  min-width: 84px;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 11px;
+}
+
+.gpt-model-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.gpt-model-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.gpt-model-tools input {
+  @include theme.ark-input-base;
+}
+
+.gpt-model-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.gpt-model-card {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 10px 12px;
+  @include theme.tech-grid(18px, 0.02);
+}
+
+.gpt-model-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.gpt-model-card-head label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.gpt-model-id {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.65);
+  font-family: theme.$font-mono;
+  word-break: break-all;
+}
+
+.gpt-model-card-actions {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.gpt-model-card-actions .btn {
+  min-width: 110px;
+}
+
+.gpt-ref-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.gpt-ref-item {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 10px;
+}
+
+.gpt-ref-actions {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.gpt-expression-map-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.gpt-expression-map-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.gpt-expression-map-row input,
+.gpt-expression-map-row select {
+  @include theme.ark-input-base;
+  width: 100%;
+}
+
 @media (max-width: 860px) {
   .settings-overlay {
     align-items: flex-start;
@@ -2987,6 +4636,20 @@ watch(
     max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 12px);
     clip-path: none;
     box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.15);
+  }
+
+  .gpt-model-dialog,
+  .gpt-model-editor-dialog {
+    width: 100%;
+    max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 12px);
+  }
+
+  .gpt-model-tools {
+    grid-template-columns: 1fr;
+  }
+
+  .gpt-expression-map-row {
+    grid-template-columns: 1fr;
   }
 
   .emotion-layout {
@@ -3143,12 +4806,30 @@ watch(
     clip-path: none;
   }
 
+  .gpt-model-dialog,
+  .gpt-model-editor-dialog {
+    width: 100vw;
+    max-height: 100dvh;
+    box-shadow: none;
+    clip-path: none;
+  }
+
   .browser-dialog-header {
     padding: 12px;
   }
 
   .browser-dialog-body {
     padding: 10px 12px 12px;
+  }
+
+  .gpt-model-header-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .gpt-model-card-actions .btn {
+    min-width: 0;
+    flex: 1 1 120px;
   }
 }
 </style>

@@ -438,12 +438,18 @@ export const TTSManager = {
 
     try {
       const url = new URL(base + endpoint);
+      const modelCfg: any = (resolvedVoice as any)?.gptSoVitsModel || null;
+      const modelParams: any = modelCfg?.params || {};
       const vcfg: any = resolvedVoice?.gptSoVits || {};
 
-      const textLang = String(vcfg.textLang || cfg.textLang || 'auto').trim() || 'auto';
-      const promptLang = String(vcfg.promptLang || 'zh').trim() || 'zh';
+      const textLang = String(vcfg.textLang || modelParams.textLang || cfg.textLang || 'auto').trim() || 'auto';
+      const promptLang = String(vcfg.promptLang || modelParams.promptLang || 'zh').trim() || 'zh';
       const refAudioPath = String(vcfg.refAudioPath || '').trim();
-      const promptText = String(vcfg.promptText || '').trim();
+      const promptText = String(vcfg.promptText || modelParams.promptText || '').trim();
+      const textSplitMethod = String(vcfg.textSplitMethod || modelParams.textSplitMethod || cfg.textSplitMethod || '').trim();
+      const mediaType = String(vcfg.mediaType || modelParams.mediaType || cfg.mediaType || '').trim();
+      const streamingMode = !!(vcfg.streamingMode ?? modelParams.streamingMode ?? cfg.streamingMode);
+      const speedFactor = Number(vcfg.speedFactor ?? modelParams.speedFactor ?? cfg.speedFactor);
 
       url.searchParams.set('text', text);
       url.searchParams.set('text_lang', textLang);
@@ -451,10 +457,12 @@ export const TTSManager = {
       url.searchParams.set('prompt_lang', promptLang);
       url.searchParams.set('prompt_text', promptText);
 
-      if (cfg.textSplitMethod) url.searchParams.set('text_split_method', String(cfg.textSplitMethod));
-      if (cfg.mediaType) url.searchParams.set('media_type', String(cfg.mediaType));
-      url.searchParams.set('streaming_mode', cfg.streamingMode ? 'true' : 'false');
-      if (cfg.speedFactor) url.searchParams.set('speed_factor', String(cfg.speedFactor));
+      if (textSplitMethod) url.searchParams.set('text_split_method', textSplitMethod);
+      if (mediaType) url.searchParams.set('media_type', mediaType);
+      url.searchParams.set('streaming_mode', streamingMode ? 'true' : 'false');
+      if (Number.isFinite(speedFactor) && speedFactor > 0) {
+        url.searchParams.set('speed_factor', String(speedFactor));
+      }
 
       return url.toString();
     } catch (e) {
@@ -593,53 +601,182 @@ export const TTSManager = {
 
   async _ensureGptSoVitsWeights(resolvedVoice: TTSSpeakerVoice): Promise<boolean> {
     const cfg = getGptSoVitsConfig();
+    const modelCfg: any = (resolvedVoice as any)?.gptSoVitsModel || null;
     const vcfg: any = resolvedVoice?.gptSoVits || {};
+    const modelParams: any = modelCfg?.params || {};
+    const modelPaths: any = modelCfg?.paths || {};
 
-    const desiredGpt = String(vcfg.gptWeightsPath || '').trim();
-    const desiredSovits = String(vcfg.sovitsWeightsPath || '').trim();
+    const strictWeightSwitch = !!(vcfg.strictWeightSwitch ?? modelParams.strictWeightSwitch ?? cfg.strictWeightSwitch);
+    let switchMode = normalizeGptSoVitsSwitchMode(vcfg.modelSwitchMode || modelParams.modelSwitchMode || cfg.modelSwitchMode);
+    const setModelEndpoint = String(
+      vcfg.setModelEndpoint || modelParams.setModelEndpoint || cfg.setModelEndpoint || '/set_model',
+    ).trim() || '/set_model';
+    const desiredGpt = String(vcfg.gptWeightsPath || modelPaths.gptWeightsPath || '').trim();
+    const desiredSovits = String(vcfg.sovitsWeightsPath || modelPaths.sovitsWeightsPath || '').trim();
 
-    let switchMode = normalizeGptSoVitsSwitchMode(vcfg.modelSwitchMode || cfg.modelSwitchMode);
-    const setModelEndpoint = String(vcfg.setModelEndpoint || cfg.setModelEndpoint || '/set_model').trim() || '/set_model';
-
-    if (switchMode === 'none') return true;
+    if (switchMode === 'none') return false;
     if (!desiredGpt && !desiredSovits) return true;
-    if (this._gptSoVitsWeightSwitchUnavailable) return false;
+    if (this._gptSoVitsWeightSwitchUnavailable) {
+      if (!this._gptSoVitsWeightSwitchWarned) {
+        this._gptSoVitsWeightSwitchWarned = true;
+        showToast('GPT-SoVITS: 当前环境无法请求 /set_*（CORS/代理限制），已跳过自动切模型');
+      }
+      if (strictWeightSwitch) {
+        throw new Error('自动切权重已不可用（请求可能被浏览器或 CORS 拦截）');
+      }
+      return false;
+    }
 
-    if (switchMode === 'set_model') {
-      if (desiredGpt && desiredSovits) {
+    const failures: string[] = [];
+    const trySetModelFallback = async (triggerMsg: unknown): Promise<boolean> => {
+      const canFallback = switchMode === 'set_weights' && !!desiredGpt && !!desiredSovits && !strictWeightSwitch;
+      if (!canFallback) return false;
+      const msg = String(triggerMsg || '');
+      const looksLikeEndpointMismatch = /404|405|not found|cannot\s+(get|post)|method not allowed/i.test(msg);
+      if (!looksLikeEndpointMismatch) return false;
+
+      try {
+        console.warn(`[${SCRIPT_NAME}] GPT-SoVITS: set_weights 接口不可用，自动回退 set_model`);
+        await this._setGptSoVitsModelPair(desiredGpt, desiredSovits, setModelEndpoint);
+        this._gptSoVitsActiveWeights.gpt = desiredGpt;
+        this._gptSoVitsActiveWeights.sovits = desiredSovits;
+        return true;
+      } catch (fallbackErr) {
+        console.warn(`[${SCRIPT_NAME}] GPT-SoVITS: set_model 回退失败`, fallbackErr);
+        return false;
+      }
+    };
+
+    if (switchMode === 'set_model' && desiredGpt && desiredSovits) {
+      const needPairSwitch =
+        desiredGpt !== this._gptSoVitsActiveWeights.gpt || desiredSovits !== this._gptSoVitsActiveWeights.sovits;
+      if (needPairSwitch) {
+        let setModelError = '';
+        let setModelFetchBlocked = false;
+
         try {
           await this._setGptSoVitsModelPair(desiredGpt, desiredSovits, setModelEndpoint);
           this._gptSoVitsActiveWeights.gpt = desiredGpt;
           this._gptSoVitsActiveWeights.sovits = desiredSovits;
-          return true;
         } catch (e) {
-          console.warn(`[${SCRIPT_NAME}] GPT-SoVITS: set_model 失败，回退 set_weights`, e);
-          switchMode = 'set_weights';
+          setModelError = String((e as any)?.message || e || 'unknown error');
+          setModelFetchBlocked = /failed to fetch/i.test(setModelError);
+          console.warn(`[${SCRIPT_NAME}] GPT-SoVITS: set_model 切换失败`, e);
         }
-      } else {
-        switchMode = 'set_weights';
+
+        if (setModelError && !strictWeightSwitch) {
+          console.warn(`[${SCRIPT_NAME}] GPT-SoVITS: set_model 失败，回退 set_weights 兼容模式`);
+          try {
+            if (desiredGpt && desiredGpt !== this._gptSoVitsActiveWeights.gpt) {
+              await this._setGptSoVitsWeights('gpt', desiredGpt);
+              this._gptSoVitsActiveWeights.gpt = desiredGpt;
+            }
+            if (desiredSovits && desiredSovits !== this._gptSoVitsActiveWeights.sovits) {
+              await this._setGptSoVitsWeights('sovits', desiredSovits);
+              this._gptSoVitsActiveWeights.sovits = desiredSovits;
+            }
+            setModelError = '';
+          } catch (fallbackErr) {
+            const fallbackMsg = String((fallbackErr as any)?.message || fallbackErr || 'unknown error');
+            setModelError = `${setModelError} | fallback_set_weights: ${fallbackMsg}`;
+          }
+        }
+
+        if (setModelError && setModelFetchBlocked) {
+          this._gptSoVitsWeightSwitchUnavailable = true;
+          console.warn(`[${SCRIPT_NAME}] GPT-SoVITS: /set_model 请求被浏览器拦截，后续将跳过自动切模型`);
+          if (!strictWeightSwitch) {
+            if (!this._gptSoVitsWeightSwitchWarned) {
+              this._gptSoVitsWeightSwitchWarned = true;
+              showToast('GPT-SoVITS: 当前环境无法请求 /set_*（CORS/代理限制），已跳过自动切模型');
+            }
+            return false;
+          }
+        }
+
+        if (setModelError) {
+          failures.push(`set_model: ${setModelError}`);
+        }
       }
+
+      if (failures.length > 0) {
+        if (strictWeightSwitch) {
+          throw new Error(`权重切换失败: ${failures.join(' | ')}`);
+        }
+        const clipped = failures[0].length > 120 ? `${failures[0].slice(0, 120)}...` : failures[0];
+        showToast(`GPT-SoVITS 权重切换失败，继续使用当前模型（${clipped}）`);
+      }
+      return true;
+    }
+
+    if (switchMode === 'set_model' && (!desiredGpt || !desiredSovits)) {
+      console.warn(`[${SCRIPT_NAME}] GPT-SoVITS: modelSwitchMode=set_model 但缺少双权重路径，回退 set_weights 逻辑`);
+      switchMode = 'set_weights';
     }
 
     if (switchMode === 'set_weights') {
-      try {
-        if (desiredGpt && desiredGpt !== this._gptSoVitsActiveWeights.gpt) {
+      if (desiredGpt && desiredGpt !== this._gptSoVitsActiveWeights.gpt) {
+        try {
           await this._setGptSoVitsWeights('gpt', desiredGpt);
           this._gptSoVitsActiveWeights.gpt = desiredGpt;
+        } catch (e) {
+          const msg = String((e as any)?.message || e || 'unknown error');
+          if (await trySetModelFallback(msg)) {
+            return true;
+          }
+          failures.push(`gpt: ${msg}`);
+          const fetchBlocked = /failed to fetch/i.test(msg);
+          if (fetchBlocked) this._gptSoVitsWeightSwitchUnavailable = true;
+          if (fetchBlocked) {
+            console.warn(`[${SCRIPT_NAME}] GPT-SoVITS: /set_gpt_weights 请求被浏览器拦截，后续将跳过自动切模型`);
+            if (!strictWeightSwitch) {
+              if (!this._gptSoVitsWeightSwitchWarned) {
+                this._gptSoVitsWeightSwitchWarned = true;
+                showToast('GPT-SoVITS: 当前环境无法请求 /set_*（CORS/代理限制），已跳过自动切模型');
+              }
+              return false;
+            }
+          } else {
+            console.warn(`[${SCRIPT_NAME}] GPT-SoVITS: 切换 gpt 权重失败`, e);
+          }
         }
-        if (desiredSovits && desiredSovits !== this._gptSoVitsActiveWeights.sovits) {
+      }
+
+      if (desiredSovits && desiredSovits !== this._gptSoVitsActiveWeights.sovits) {
+        try {
           await this._setGptSoVitsWeights('sovits', desiredSovits);
           this._gptSoVitsActiveWeights.sovits = desiredSovits;
+        } catch (e) {
+          const msg = String((e as any)?.message || e || 'unknown error');
+          if (await trySetModelFallback(msg)) {
+            return true;
+          }
+          failures.push(`sovits: ${msg}`);
+          const fetchBlocked = /failed to fetch/i.test(msg);
+          if (fetchBlocked) this._gptSoVitsWeightSwitchUnavailable = true;
+          if (fetchBlocked) {
+            console.warn(`[${SCRIPT_NAME}] GPT-SoVITS: /set_sovits_weights 请求被浏览器拦截，后续将跳过自动切模型`);
+            if (!strictWeightSwitch) {
+              if (!this._gptSoVitsWeightSwitchWarned) {
+                this._gptSoVitsWeightSwitchWarned = true;
+                showToast('GPT-SoVITS: 当前环境无法请求 /set_*（CORS/代理限制），已跳过自动切模型');
+              }
+              return false;
+            }
+          } else {
+            console.warn(`[${SCRIPT_NAME}] GPT-SoVITS: 切换 sovits 权重失败`, e);
+          }
         }
-        return true;
-      } catch (e) {
-        if (!this._gptSoVitsWeightSwitchWarned) {
-          this._gptSoVitsWeightSwitchWarned = true;
-          showToast('GPT-SoVITS 切换权重失败，请检查 /proxy 下 set_* 接口');
-        }
-        console.warn(`[${SCRIPT_NAME}] GPT-SoVITS: set_weights 失败`, e);
-        return false;
       }
+    }
+
+    if (failures.length > 0) {
+      const detail = failures[0];
+      const clipped = detail.length > 120 ? `${detail.slice(0, 120)}...` : detail;
+      if (strictWeightSwitch) {
+        throw new Error(`权重切换失败: ${failures.join(' | ')}`);
+      }
+      showToast(`GPT-SoVITS 权重切换失败，继续使用当前模型（${clipped}）`);
     }
 
     return true;
@@ -658,7 +795,13 @@ export const TTSManager = {
       return false;
     }
 
-    await this._ensureGptSoVitsWeights(resolvedVoice);
+    try {
+      await this._ensureGptSoVitsWeights(resolvedVoice);
+    } catch (e: any) {
+      const reason = String(e?.message || e || 'unknown error');
+      showToast(`GPT-SoVITS 权重切换失败：${clipText(reason, 120)}`);
+      return false;
+    }
 
     const directUrl = this._buildGptSoVitsTtsUrl(segment.text, resolvedVoice);
     if (!directUrl) {

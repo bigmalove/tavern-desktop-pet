@@ -1,4 +1,4 @@
-import type { EmotionTag } from '../core/constants';
+import { EMPTY_MOTION_GROUP_VALUE, type EmotionTag } from '../core/constants';
 import type { EmotionMotionOverride } from '../core/emotion';
 
 export const EXPRESSION_LIVE2D_MAP: Record<
@@ -403,9 +403,18 @@ function pushMotionEntriesFromGroupContainer(entries: Live2DMotionEntry[], seen:
   if (!container) return;
 
   const pushFromList = (group: string, list: unknown[]) => {
+    const isKnownMotionDef = (def: unknown): boolean => {
+      if (typeof def === 'string') return String(def).trim().length > 0;
+      if (!def || typeof def !== 'object') return false;
+      const obj = def as any;
+      if (String(obj.File || obj.file || obj.Path || obj.path || '').trim()) return true;
+      if (String(obj.Name || obj.name || obj.Id || obj.id || '').trim()) return true;
+      return isMotionDefinition(def);
+    };
+
     for (let i = 0; i < list.length; i++) {
       const def = list[i];
-      if (!isMotionDefinition(def)) continue;
+      if (!isKnownMotionDef(def)) continue;
       const name = normalizeDefinitionName(def, `motion_${i + 1}`);
       uniqueMotionPush(entries, seen, { group, index: i, name });
     }
@@ -598,6 +607,12 @@ export function matchLive2DExpression(model: any, targetExpression: EmotionTag, 
 
 export type Live2DMotionMatch = { group: string; index: number; name?: string };
 
+function normalizeMotionOverrideGroup(rawGroup: unknown): string {
+  const normalized = String(rawGroup ?? '').trim();
+  if (normalized === EMPTY_MOTION_GROUP_VALUE) return '';
+  return normalized;
+}
+
 export function matchLive2DMotion(
   model: any,
   targetExpression: EmotionTag,
@@ -605,10 +620,13 @@ export function matchLive2DMotion(
 ): Live2DMotionMatch | null {
   if (override && override.enabled === false) return null;
 
-  const overrideGroup = String(override?.group || '').trim();
+  const overrideGroupRaw = String(override?.group ?? '');
+  const hasEmptyGroupMarker = overrideGroupRaw.trim() === EMPTY_MOTION_GROUP_VALUE;
+  const overrideGroup = normalizeMotionOverrideGroup(override?.group);
   const overrideIndexRaw = Number(override?.index);
   const overrideIndex = Number.isFinite(overrideIndexRaw) ? Math.max(0, Math.floor(overrideIndexRaw)) : 0;
-  if (overrideGroup) {
+  const hasExplicitOverride = hasEmptyGroupMarker || !!overrideGroup || overrideIndex > 0;
+  if (hasExplicitOverride) {
     const entries = collectMotionEntries(model);
     const groupNames = collectMotionGroupNames(model);
     const lower = overrideGroup.toLowerCase();
@@ -634,41 +652,41 @@ export function matchLive2DMotion(
       return { group: exactGroup, index: overrideIndex };
     }
 
-    // 兼容旧配置：group 字段可能写入了 motion name。
-    const exactByName =
-      entries.find((e) => e.name.toLowerCase() === lower && e.index === overrideIndex) ||
-      entries.find((e) => e.name.toLowerCase() === lower);
-    if (exactByName) {
-      return { group: exactByName.group, index: exactByName.index, name: exactByName.name };
-    }
-
-    const fuzzyByName = entries.find((e) => {
-      const nameLower = e.name.toLowerCase();
-      return nameLower.includes(lower) || lower.includes(nameLower);
-    });
-    if (fuzzyByName) {
-      return { group: fuzzyByName.group, index: fuzzyByName.index, name: fuzzyByName.name };
-    }
-
-    const fuzzyGroup = groupNames.find((name) => {
-      const nameLower = String(name || '').trim().toLowerCase();
-      return !!nameLower && (nameLower.includes(lower) || lower.includes(nameLower));
-    });
-    if (fuzzyGroup !== undefined) {
-      const exactInGroup = entries.find(
-        (e) => String(e.group || '').trim() === fuzzyGroup && e.index === overrideIndex,
-      );
-      if (exactInGroup) {
-        return { group: exactInGroup.group, index: exactInGroup.index, name: exactInGroup.name };
+    if (lower) {
+      // 兼容旧配置：group 字段可能写入了 motion name。
+      const exactByName =
+        entries.find((e) => e.name.toLowerCase() === lower && e.index === overrideIndex) ||
+        entries.find((e) => e.name.toLowerCase() === lower);
+      if (exactByName) {
+        return { group: exactByName.group, index: exactByName.index, name: exactByName.name };
       }
-      const firstInGroup = entries.find((e) => String(e.group || '').trim() === fuzzyGroup);
-      if (firstInGroup) {
-        return { group: firstInGroup.group, index: firstInGroup.index, name: firstInGroup.name };
-      }
-      return { group: fuzzyGroup, index: overrideIndex };
-    }
 
-    return null;
+      const fuzzyByName = entries.find((e) => {
+        const nameLower = e.name.toLowerCase();
+        return nameLower.includes(lower) || lower.includes(nameLower);
+      });
+      if (fuzzyByName) {
+        return { group: fuzzyByName.group, index: fuzzyByName.index, name: fuzzyByName.name };
+      }
+
+      const fuzzyGroup = groupNames.find((name) => {
+        const nameLower = String(name || '').trim().toLowerCase();
+        return !!nameLower && (nameLower.includes(lower) || lower.includes(nameLower));
+      });
+      if (fuzzyGroup !== undefined) {
+        const exactInGroup = entries.find(
+          (e) => String(e.group || '').trim() === fuzzyGroup && e.index === overrideIndex,
+        );
+        if (exactInGroup) {
+          return { group: exactInGroup.group, index: exactInGroup.index, name: exactInGroup.name };
+        }
+        const firstInGroup = entries.find((e) => String(e.group || '').trim() === fuzzyGroup);
+        if (firstInGroup) {
+          return { group: firstInGroup.group, index: firstInGroup.index, name: firstInGroup.name };
+        }
+        return { group: fuzzyGroup, index: overrideIndex };
+      }
+    }
   }
 
   const mapping = EXPRESSION_LIVE2D_MAP[targetExpression];
@@ -716,6 +734,15 @@ export function matchLive2DMotion(
       return nameLower.includes(candidate) || candidate.includes(nameLower);
     });
     if (fuzzy) return { group: fuzzy.group, index: fuzzy.index, name: fuzzy.name };
+  }
+
+  if (entries.length > 0) {
+    const first = entries[0];
+    return { group: first.group, index: first.index, name: first.name };
+  }
+
+  if (groupNames.length > 0) {
+    return { group: groupNames[0], index: 0 };
   }
 
   return null;

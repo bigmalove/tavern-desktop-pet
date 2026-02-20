@@ -1,7 +1,16 @@
-﻿import { EIKANYA_CDN_BASE, EIKANYA_RAW_BASE, LIVE2D_CDN_BASE } from '../core/constants';
+﻿import {
+  EIKANYA_CDN_BASE,
+  EIKANYA_RAW_BASE,
+  LIVE2D_CDN_BASE,
+  LOCAL_LIVE2D_MODEL_PATH_PREFIX,
+  LOCAL_LIVE2D_MODEL_SLOT_ID,
+  type Live2DRuntimeType,
+} from '../core/constants';
 import { useSettingsStore } from '../core/settings';
 import { error, log, warn } from '../utils/dom';
+import { getLive2DModel, type StoredLive2DModel } from '../db/live2d-models';
 import { Live2DLoader } from './loader';
+import { LIVE2D_RUNTIME_TYPES, resolveLive2DRuntime, withResolvedLive2DRuntime } from './runtime-router';
 import { Live2DStage } from './stage';
 import {
   collectExpressionNames,
@@ -31,6 +40,12 @@ export const Live2DManager = {
     'gcore.jsdelivr.net',
   ],
   _runtime: null as any,
+  _runtimeType: LIVE2D_RUNTIME_TYPES.LEGACY as Live2DRuntimeType,
+  _runtimeInfo: withResolvedLive2DRuntime({}),
+  _localBlobUrls: [] as string[],
+  _xhrBlobUrlSupport: null as boolean | null,
+  _xhrBlobUrlSupportPromise: null as Promise<boolean> | null,
+  _hasLoggedBlobUrlDisabled: false,
   model: null as any,
   isReady: false,
   modelBaseWidth: null as number | null,
@@ -67,6 +82,845 @@ export const Live2DManager = {
     const runtimePixi = Live2DLoader.getPixi(this._top());
     if (runtimePixi) return runtimePixi;
     return this._runtime?.pixi ?? null;
+  },
+
+  _setRuntimeInfo(runtimeInfo: Record<string, any> | null): {
+    runtimeType: Live2DRuntimeType;
+    cubismVersion: number | null;
+    moc3Version?: number | null;
+  } {
+    const resolved = withResolvedLive2DRuntime(runtimeInfo || {});
+    this._runtimeInfo = resolved;
+    this._runtimeType = resolved.runtimeType;
+    return resolved;
+  },
+
+  _registerLocalBlobUrl(url: string): void {
+    const value = String(url || '').trim();
+    if (!value) return;
+    if (!this._localBlobUrls.includes(value)) {
+      this._localBlobUrls.push(value);
+    }
+  },
+
+  _revokeLocalBlobUrls(): void {
+    if (!Array.isArray(this._localBlobUrls) || this._localBlobUrls.length === 0) {
+      this._localBlobUrls = [];
+      return;
+    }
+
+    const top = this._top() as any;
+    const topURL = top?.URL || URL;
+    for (const url of this._localBlobUrls) {
+      try {
+        topURL.revokeObjectURL(url);
+      } catch {
+        // ignore
+      }
+    }
+    this._localBlobUrls = [];
+  },
+
+  _disableXhrBlobUrls(reason: string): void {
+    this._xhrBlobUrlSupport = false;
+    this._xhrBlobUrlSupportPromise = null;
+    if (!this._hasLoggedBlobUrlDisabled) {
+      this._hasLoggedBlobUrlDisabled = true;
+      warn(`检测到当前环境不支持 Live2D XHR 读取 blob URL，回退 Data URL（${reason}）`);
+    }
+  },
+
+  async _supportsXhrBlobUrls(): Promise<boolean> {
+    if (this._xhrBlobUrlSupport === true || this._xhrBlobUrlSupport === false) {
+      return this._xhrBlobUrlSupport;
+    }
+    if (this._xhrBlobUrlSupportPromise) {
+      return await this._xhrBlobUrlSupportPromise;
+    }
+
+    this._xhrBlobUrlSupportPromise = (async () => {
+      try {
+        const top = this._top() as any;
+        const topURL = top?.URL || URL;
+        const XHR = top?.XMLHttpRequest;
+        if (!topURL?.createObjectURL || !topURL?.revokeObjectURL || typeof XHR !== 'function') {
+          return false;
+        }
+
+        const payload = new Uint8Array([1, 2, 3, 4]);
+        const blob = new Blob([payload], { type: 'application/octet-stream' });
+        const blobUrl = topURL.createObjectURL(blob);
+
+        const ok = await new Promise<boolean>((resolve) => {
+          let done = false;
+          const finish = (value: boolean) => {
+            if (done) return;
+            done = true;
+            resolve(value);
+          };
+
+          try {
+            const xhr = new XHR();
+            xhr.open('GET', blobUrl, true);
+            xhr.responseType = 'arraybuffer';
+            xhr.timeout = 1500;
+            xhr.onload = () => {
+              const buf = xhr.response;
+              finish(!!buf && buf.byteLength === payload.byteLength);
+            };
+            xhr.onerror = () => finish(false);
+            xhr.onabort = () => finish(false);
+            xhr.ontimeout = () => finish(false);
+            xhr.send();
+          } catch {
+            finish(false);
+          }
+        });
+
+        try {
+          topURL.revokeObjectURL(blobUrl);
+        } catch {
+          // ignore
+        }
+        return ok;
+      } catch {
+        return false;
+      }
+    })().finally(() => {
+      this._xhrBlobUrlSupportPromise = null;
+    });
+
+    const supported = await this._xhrBlobUrlSupportPromise;
+    this._xhrBlobUrlSupport = supported;
+    if (!supported) {
+      this._disableXhrBlobUrls('xhr-probe-failed');
+    }
+    return supported;
+  },
+
+  _isLocalModelPath(path: string): boolean {
+    return String(path || '').trim().toLowerCase().startsWith(LOCAL_LIVE2D_MODEL_PATH_PREFIX.toLowerCase());
+  },
+
+  _normalizeLocalModelId(_path: string): string {
+    return LOCAL_LIVE2D_MODEL_SLOT_ID;
+  },
+
+  _toArrayBuffer(input: unknown): ArrayBuffer | null {
+    if (!input) return null;
+    if (input instanceof ArrayBuffer) return input;
+    if (ArrayBuffer.isView(input)) {
+      return input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength);
+    }
+    return null;
+  },
+
+  _normalizeMocVersion(rawMocVersion: unknown): number | null {
+    const value = Number(rawMocVersion || 0);
+    if (!Number.isFinite(value)) return null;
+    if (value >= 5) return 5;
+    if (value >= 1 && value <= 4) return 4;
+    return null;
+  },
+
+  _readMoc3HeaderVersion(moc3Data: unknown): number | null {
+    const moc3Buffer = this._toArrayBuffer(moc3Data);
+    if (!moc3Buffer || moc3Buffer.byteLength < 8) return null;
+
+    try {
+      const header = new Uint8Array(moc3Buffer, 0, 4);
+      const signature = String.fromCharCode(...header);
+      if (signature !== 'MOC3') return null;
+      const view = new DataView(moc3Buffer);
+      return Number(view.getUint32(4, true) || 0) || null;
+    } catch {
+      return null;
+    }
+  },
+
+  _detectCubismVersionFromMoc3Buffer(moc3Data: unknown): number | null {
+    const moc3Buffer = this._toArrayBuffer(moc3Data);
+    if (!moc3Buffer) return null;
+
+    const top = this._top() as any;
+    const core = top?.Live2DCubismCore;
+    const Moc = core?.Moc;
+    const Version = core?.Version;
+    if (typeof Moc?.fromArrayBuffer !== 'function' || typeof Version?.csmGetMocVersion !== 'function') {
+      return null;
+    }
+
+    let mocRef: any = null;
+    try {
+      mocRef = Moc.fromArrayBuffer(moc3Buffer);
+      if (!mocRef) return null;
+
+      const rawMocVersion = Number(Version.csmGetMocVersion(mocRef, moc3Buffer) || 0) || 0;
+      const latestMocVersion = Number(Version?.csmGetLatestMocVersion?.() || 0) || 0;
+      const normalized = this._normalizeMocVersion(rawMocVersion);
+      if (latestMocVersion > 0 && rawMocVersion > latestMocVersion) {
+        return null;
+      }
+      return normalized;
+    } catch {
+      return null;
+    } finally {
+      try {
+        if (mocRef && typeof mocRef._release === 'function') {
+          mocRef._release();
+        } else if (mocRef && typeof mocRef.release === 'function') {
+          mocRef.release();
+        }
+      } catch {
+        // ignore
+      }
+    }
+  },
+
+  async _detectRuntimeFromMoc3(
+    moc3Data: unknown,
+    runtimeInfo: Record<string, any> | null = null,
+  ): Promise<{
+    runtimeType: Live2DRuntimeType;
+    cubismVersion: number | null;
+    moc3Version?: number | null;
+  }> {
+    const resolvedRuntime = resolveLive2DRuntime(runtimeInfo || this._runtimeInfo || null);
+    const moc3Buffer = this._toArrayBuffer(moc3Data);
+    if (!moc3Buffer) {
+      return this._setRuntimeInfo(resolvedRuntime);
+    }
+
+    const headerVersionRaw = this._readMoc3HeaderVersion(moc3Buffer);
+    const headerVersion = this._normalizeMocVersion(headerVersionRaw);
+    const runtimeWithHeader = {
+      ...resolvedRuntime,
+      moc3Version: headerVersionRaw ?? null,
+    };
+
+    try {
+      const requiredLatestVersion = headerVersionRaw && headerVersionRaw >= 5 ? headerVersionRaw : 5;
+      await Live2DLoader.ensureCubism5Core(requiredLatestVersion);
+    } catch {
+      // ignore
+    }
+
+    const mocVersion = this._detectCubismVersionFromMoc3Buffer(moc3Buffer);
+    const resolvedVersion = mocVersion ?? headerVersion ?? runtimeWithHeader.cubismVersion ?? null;
+    return this._setRuntimeInfo({
+      ...runtimeWithHeader,
+      cubismVersion: resolvedVersion,
+    });
+  },
+
+  _isCoreParseError(err: unknown): boolean {
+    const message = String((err as any)?.message || err || '');
+    const stack = String((err as any)?.stack || '');
+    return /unknown error/i.test(message) || /createcoremodel/i.test(stack) || /be\.create/i.test(stack);
+  },
+
+  async _ensureRuntimeDependencies(
+    runtimeInfo: Record<string, any> | null,
+    contextLabel: string,
+  ): Promise<{
+    runtimeType: Live2DRuntimeType;
+    cubismVersion: number | null;
+    moc3Version?: number | null;
+  }> {
+    const resolvedRuntime = this._setRuntimeInfo(runtimeInfo || null);
+    const requiredMocVersion = Number((resolvedRuntime as any)?.moc3Version || 0) || 0;
+    const requiredLatestVersion = requiredMocVersion >= 5 ? requiredMocVersion : 5;
+
+    if (resolvedRuntime.runtimeType === LIVE2D_RUNTIME_TYPES.CUBISM5) {
+      const coreLoaded = await Live2DLoader.ensureCubism5Core(requiredLatestVersion);
+      if (!coreLoaded) {
+        throw new Error(`Cubism5 Core 加载失败（${contextLabel}）`);
+      }
+      const runtimeLoaded = await Live2DLoader.ensureCubism5Runtime();
+      if (!runtimeLoaded) {
+        throw new Error(`Cubism5 runtime 加载失败（${contextLabel}）`);
+      }
+      Live2DLoader.activateRuntime(LIVE2D_RUNTIME_TYPES.CUBISM5);
+      this._setRuntimeInfo(resolvedRuntime);
+      return resolvedRuntime;
+    }
+
+    if (requiredMocVersion >= 5) {
+      const coreLoaded = await Live2DLoader.ensureCubism5Core(requiredLatestVersion);
+      if (!coreLoaded) {
+        throw new Error(`Cubism5 Core 加载失败（legacy+core5，${contextLabel}）`);
+      }
+      Live2DLoader.activateRuntime(LIVE2D_RUNTIME_TYPES.LEGACY);
+      const patched = this._setRuntimeInfo({
+        ...resolvedRuntime,
+        runtimeType: LIVE2D_RUNTIME_TYPES.LEGACY,
+        cubismVersion: resolvedRuntime.cubismVersion ?? 5,
+      });
+      log('legacy runtime + Cubism5 core 路由', {
+        context: contextLabel,
+        runtimeType: patched.runtimeType,
+        cubismVersion: patched.cubismVersion,
+        moc3Version: (patched as any).moc3Version ?? null,
+      });
+      return patched;
+    }
+
+    const legacyLoaded = await Live2DLoader.ensureLegacyCore();
+    if (!legacyLoaded) {
+      const top = this._top() as any;
+      const latestMocVersion = Number(top?.Live2DCubismCore?.Version?.csmGetLatestMocVersion?.() || 0) || 0;
+      if (latestMocVersion >= 5) {
+        const fallbackRuntime = this._setRuntimeInfo({
+          ...resolvedRuntime,
+          runtimeType: LIVE2D_RUNTIME_TYPES.CUBISM5,
+          cubismVersion: 5,
+        });
+        const coreLoaded = await Live2DLoader.ensureCubism5Core(requiredLatestVersion);
+        if (!coreLoaded) {
+          throw new Error(`Cubism5 Core 回退加载失败（${contextLabel}）`);
+        }
+        const runtimeLoaded = await Live2DLoader.ensureCubism5Runtime();
+        if (!runtimeLoaded) {
+          throw new Error(`Cubism5 runtime 回退加载失败（${contextLabel}）`);
+        }
+        Live2DLoader.activateRuntime(LIVE2D_RUNTIME_TYPES.CUBISM5);
+        return fallbackRuntime;
+      }
+      throw new Error(`legacy Core 加载失败（${contextLabel}）`);
+    }
+
+    Live2DLoader.activateRuntime(LIVE2D_RUNTIME_TYPES.LEGACY);
+    this._setRuntimeInfo(resolvedRuntime);
+    return resolvedRuntime;
+  },
+
+  _getLive2DModelClass(runtimeType: Live2DRuntimeType): any {
+    const top = this._top() as any;
+    const namespace = Live2DLoader.getRuntimeNamespace(runtimeType) || top?.PIXI?.live2d;
+    return namespace?.Live2DModel || null;
+  },
+
+  _registerTickerForRuntime(Live2DModel: any, PIXI: any): void {
+    if (!Live2DModel || !PIXI || typeof Live2DModel.registerTicker !== 'function') {
+      return;
+    }
+    const lastRegisteredTicker = (Live2DModel as any)[TICKER_REGISTERED_FLAG] as unknown;
+    if (lastRegisteredTicker !== PIXI.Ticker) {
+      Live2DModel.registerTicker(PIXI.Ticker);
+      (Live2DModel as any)[TICKER_REGISTERED_FLAG] = PIXI.Ticker;
+      log('Live2D ticker 注册完成');
+    }
+  },
+
+  _blobToDataUrl(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(reader.error || new Error('Blob 转 DataURL 失败'));
+      reader.readAsDataURL(blob);
+    });
+  },
+
+  _normalizeStoredPath(path: unknown): string {
+    return String(path || '')
+      .replace(/\\/g, '/')
+      .trim();
+  },
+
+  _getPathBaseName(path: unknown): string {
+    const normalized = this._normalizeStoredPath(path);
+    const lastSlash = normalized.lastIndexOf('/');
+    return lastSlash >= 0 ? normalized.slice(lastSlash + 1) : normalized;
+  },
+
+  _guessMimeTypeByPath(path: unknown, fallback = 'application/octet-stream'): string {
+    const lower = this._normalizeStoredPath(path).toLowerCase();
+    if (lower.endsWith('.png')) return 'image/png';
+    if (lower.endsWith('.webp')) return 'image/webp';
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+    if (lower.endsWith('.json') || lower.endsWith('.model3.json') || lower.endsWith('.model.json')) {
+      return 'application/json';
+    }
+    if (lower.endsWith('.moc') || lower.endsWith('.moc3')) return 'application/octet-stream';
+    return fallback;
+  },
+
+  _findStoredTextureBlob(modelData: StoredLive2DModel, targetPath: unknown, index = -1): Blob | null {
+    const textures = Array.isArray(modelData?.textures) ? modelData.textures : [];
+    if (!textures.length) return null;
+
+    const normalizedTarget = this._normalizeStoredPath(targetPath);
+    const targetBaseName = this._getPathBaseName(normalizedTarget);
+
+    const exact = textures.find((item) => this._normalizeStoredPath(item?.name) === normalizedTarget);
+    if (exact?.data instanceof Blob) return exact.data;
+
+    const byBase = textures.find((item) => this._getPathBaseName(item?.name) === targetBaseName);
+    if (byBase?.data instanceof Blob) return byBase.data;
+
+    const indexed = index >= 0 ? textures[index] : null;
+    if (indexed?.data instanceof Blob) return indexed.data;
+
+    return null;
+  },
+
+  _findStoredMotionData(
+    modelData: StoredLive2DModel,
+    groupName: string,
+    targetPath: unknown,
+    index = -1,
+  ): ArrayBuffer | null {
+    const motions = modelData?.motions && typeof modelData.motions === 'object' ? modelData.motions : {};
+    const targetNormalized = this._normalizeStoredPath(targetPath);
+    const targetBaseName = this._getPathBaseName(targetNormalized);
+    const targetGroup = String(groupName || '');
+
+    const groupList = Array.isArray((motions as any)?.[targetGroup]) ? (motions as any)[targetGroup] : [];
+    const exact = groupList.find((item: any) => this._normalizeStoredPath(item?.name) === targetNormalized);
+    if (exact?.data instanceof ArrayBuffer) return exact.data;
+
+    const byBase = groupList.find((item: any) => this._getPathBaseName(item?.name) === targetBaseName);
+    if (byBase?.data instanceof ArrayBuffer) return byBase.data;
+
+    const indexed = index >= 0 ? groupList[index] : null;
+    if (indexed?.data instanceof ArrayBuffer) return indexed.data;
+
+    for (const value of Object.values(motions)) {
+      const list = Array.isArray(value) ? value : [];
+      const crossExact = list.find((item: any) => this._normalizeStoredPath(item?.name) === targetNormalized);
+      if (crossExact?.data instanceof ArrayBuffer) return crossExact.data;
+      const crossByBase = list.find((item: any) => this._getPathBaseName(item?.name) === targetBaseName);
+      if (crossByBase?.data instanceof ArrayBuffer) return crossByBase.data;
+    }
+
+    return null;
+  },
+
+  _findStoredExpressionData(modelData: StoredLive2DModel, targetPath: unknown, index = -1): ArrayBuffer | null {
+    const expressions = Array.isArray(modelData?.expressions) ? modelData.expressions : [];
+    if (!expressions.length) return null;
+
+    const targetNormalized = this._normalizeStoredPath(targetPath);
+    const targetBaseName = this._getPathBaseName(targetNormalized);
+
+    const exact = expressions.find((item) => this._normalizeStoredPath(item?.file || item?.name) === targetNormalized);
+    if (exact?.data instanceof ArrayBuffer) return exact.data;
+
+    const byBase = expressions.find((item) => this._getPathBaseName(item?.file || item?.name) === targetBaseName);
+    if (byBase?.data instanceof ArrayBuffer) return byBase.data;
+
+    const indexed = index >= 0 ? expressions[index] : null;
+    if (indexed?.data instanceof ArrayBuffer) return indexed.data;
+
+    return null;
+  },
+
+  _toLocalBlobUrl(payload: Blob | ArrayBuffer, mimeType = 'application/octet-stream'): string {
+    const top = this._top() as any;
+    const topURL = top?.URL || URL;
+    const blob = payload instanceof Blob ? payload : new Blob([payload], { type: mimeType });
+    const url = topURL.createObjectURL(blob);
+    this._registerLocalBlobUrl(url);
+    return url;
+  },
+
+  async _toLocalDataUrl(payload: Blob | ArrayBuffer, mimeType = 'application/octet-stream'): Promise<string> {
+    const blob = payload instanceof Blob ? payload : new Blob([payload], { type: mimeType });
+    return await this._blobToDataUrl(blob);
+  },
+
+  async _buildLocalModelBlobUrl(modelData: StoredLive2DModel): Promise<string> {
+    const modifiedModelJson = JSON.parse(JSON.stringify(modelData?.modelJson || {}));
+    this._normalizeLegacyCubism2Settings(modifiedModelJson);
+
+    const mapFile = (
+      payload: Blob | ArrayBuffer | null,
+      pathHint: unknown,
+      fallbackMime = 'application/octet-stream',
+    ): string | null => {
+      if (!payload) return null;
+      const mimeType =
+        payload instanceof Blob ? payload.type || this._guessMimeTypeByPath(pathHint, fallbackMime) : this._guessMimeTypeByPath(pathHint, fallbackMime);
+      return this._toLocalBlobUrl(payload, mimeType || fallbackMime);
+    };
+
+    const isModel3 = !!modifiedModelJson?.FileReferences;
+    if (isModel3) {
+      const refs = modifiedModelJson.FileReferences;
+      if (refs && typeof refs === 'object') {
+        const mocUrl = mapFile(modelData?.moc3 ?? null, refs.Moc, 'application/octet-stream');
+        if (mocUrl) refs.Moc = mocUrl;
+
+        if (Array.isArray(refs.Textures)) {
+          refs.Textures = refs.Textures.map((texPath: unknown, index: number) => {
+            const textureBlob = this._findStoredTextureBlob(modelData, texPath, index);
+            return mapFile(textureBlob, texPath, 'image/png') || texPath;
+          });
+        }
+
+        const physicsUrl = mapFile(modelData?.physics ?? null, refs.Physics, 'application/json');
+        if (physicsUrl && typeof refs.Physics === 'string') refs.Physics = physicsUrl;
+        const poseUrl = mapFile(modelData?.pose ?? null, refs.Pose, 'application/json');
+        if (poseUrl && typeof refs.Pose === 'string') refs.Pose = poseUrl;
+
+        if (!refs.Motions || typeof refs.Motions !== 'object') {
+          refs.Motions = {};
+        }
+        if (modelData?.motions && typeof modelData.motions === 'object') {
+          for (const [groupName, motionListRaw] of Object.entries(modelData.motions)) {
+            const motionList = Array.isArray(motionListRaw) ? motionListRaw : [];
+            if (!Array.isArray((refs as any).Motions[groupName])) {
+              (refs as any).Motions[groupName] = [];
+            }
+            const targetList = (refs as any).Motions[groupName] as any[];
+
+            for (let index = 0; index < motionList.length; index++) {
+              const storedMotion = motionList[index];
+              const existingDef = targetList[index];
+              const motionPath =
+                (existingDef && typeof existingDef === 'object'
+                  ? (existingDef as any).File || (existingDef as any).file
+                  : existingDef) ||
+                storedMotion?.name;
+              const motionData =
+                this._findStoredMotionData(modelData, groupName, motionPath, index) ?? storedMotion?.data ?? null;
+              const motionUrl = mapFile(motionData, motionPath || storedMotion?.name, 'application/json');
+              if (!motionUrl) continue;
+
+              if (existingDef && typeof existingDef === 'object') {
+                if (typeof (existingDef as any).File === 'string') (existingDef as any).File = motionUrl;
+                else (existingDef as any).file = motionUrl;
+                const existingName = String((existingDef as any).Name || (existingDef as any).name || '').trim();
+                if (!existingName) {
+                  (existingDef as any).Name = this._getPathBaseName(motionPath || storedMotion?.name);
+                }
+              } else if (typeof existingDef === 'string') {
+                targetList[index] = motionUrl;
+              } else {
+                targetList.push({
+                  Name: this._getPathBaseName(storedMotion?.name || motionPath || `motion_${index + 1}`),
+                  File: motionUrl,
+                });
+              }
+            }
+          }
+        }
+
+        if (!Array.isArray(refs.Expressions)) {
+          refs.Expressions = [];
+        }
+        if (Array.isArray(modelData?.expressions)) {
+          for (let index = 0; index < modelData.expressions.length; index++) {
+            const storedExpr = modelData.expressions[index];
+            const existingDef = refs.Expressions[index];
+            const exprPath =
+              (existingDef && typeof existingDef === 'object'
+                ? (existingDef as any).File || (existingDef as any).file
+                : existingDef) ||
+              storedExpr?.file ||
+              storedExpr?.name;
+            const exprData =
+              this._findStoredExpressionData(modelData, exprPath, index) ?? storedExpr?.data ?? null;
+            const exprUrl = mapFile(exprData, exprPath || storedExpr?.name, 'application/json');
+            if (!exprUrl) continue;
+
+            if (existingDef && typeof existingDef === 'object') {
+              if (typeof (existingDef as any).File === 'string') (existingDef as any).File = exprUrl;
+              else (existingDef as any).file = exprUrl;
+              const existingName = String((existingDef as any).Name || (existingDef as any).name || '').trim();
+              if (!existingName) {
+                (existingDef as any).Name = this._getPathBaseName(storedExpr?.name || exprPath);
+              }
+            } else if (typeof existingDef === 'string') {
+              refs.Expressions[index] = exprUrl;
+            } else {
+              refs.Expressions.push({
+                Name: this._getPathBaseName(storedExpr?.name || exprPath || `expression_${index + 1}`),
+                File: exprUrl,
+              });
+            }
+          }
+        }
+      }
+    } else {
+      const mocPath = modifiedModelJson.model || modifiedModelJson.Model;
+      const mocUrl = mapFile(modelData?.moc ?? null, mocPath, 'application/octet-stream');
+      if (mocUrl) {
+        if (typeof modifiedModelJson.model === 'string') modifiedModelJson.model = mocUrl;
+        else if (typeof modifiedModelJson.Model === 'string') modifiedModelJson.Model = mocUrl;
+        else modifiedModelJson.model = mocUrl;
+      }
+
+      const textureList = modifiedModelJson.textures || modifiedModelJson.Textures;
+      if (Array.isArray(textureList)) {
+        for (let index = 0; index < textureList.length; index++) {
+          const texturePath = textureList[index];
+          const textureBlob = this._findStoredTextureBlob(modelData, texturePath, index);
+          const textureUrl = mapFile(textureBlob, texturePath, 'image/png');
+          if (textureUrl) textureList[index] = textureUrl;
+        }
+      }
+
+      const physicsPath = modifiedModelJson.physics || modifiedModelJson.Physics;
+      const physicsUrl = mapFile(modelData?.physics ?? null, physicsPath, 'application/json');
+      if (physicsUrl) {
+        if (typeof modifiedModelJson.physics === 'string') modifiedModelJson.physics = physicsUrl;
+        if (typeof modifiedModelJson.Physics === 'string') modifiedModelJson.Physics = physicsUrl;
+      }
+
+      const posePath = modifiedModelJson.pose || modifiedModelJson.Pose;
+      const poseUrl = mapFile(modelData?.pose ?? null, posePath, 'application/json');
+      if (poseUrl) {
+        if (typeof modifiedModelJson.pose === 'string') modifiedModelJson.pose = poseUrl;
+        if (typeof modifiedModelJson.Pose === 'string') modifiedModelJson.Pose = poseUrl;
+      }
+
+      const motions = modifiedModelJson.motions || modifiedModelJson.Motions;
+      if (motions && typeof motions === 'object') {
+        for (const groupName of Object.keys(motions)) {
+          const motionList = motions[groupName];
+          if (!Array.isArray(motionList)) continue;
+          for (let index = 0; index < motionList.length; index++) {
+            const motionDef = motionList[index];
+            const motionPath =
+              typeof motionDef === 'string' ? motionDef : (motionDef as any)?.file || (motionDef as any)?.File;
+            const motionData = this._findStoredMotionData(modelData, groupName, motionPath, index);
+            const motionUrl = mapFile(motionData, motionPath, 'application/octet-stream');
+            if (!motionUrl) continue;
+
+            if (typeof motionDef === 'string') {
+              motionList[index] = motionUrl;
+            } else if (typeof (motionDef as any).file === 'string') {
+              (motionDef as any).file = motionUrl;
+            } else {
+              (motionDef as any).File = motionUrl;
+            }
+          }
+        }
+      }
+
+      const expressions = modifiedModelJson.expressions || modifiedModelJson.Expressions;
+      if (Array.isArray(expressions)) {
+        for (let index = 0; index < expressions.length; index++) {
+          const exprDef = expressions[index];
+          const exprPath = typeof exprDef === 'string' ? exprDef : (exprDef as any)?.file || (exprDef as any)?.File;
+          const exprData = this._findStoredExpressionData(modelData, exprPath, index);
+          const exprUrl = mapFile(exprData, exprPath, 'application/json');
+          if (!exprUrl) continue;
+
+          if (typeof exprDef === 'string') {
+            expressions[index] = exprUrl;
+          } else if (typeof (exprDef as any).file === 'string') {
+            (exprDef as any).file = exprUrl;
+          } else {
+            (exprDef as any).File = exprUrl;
+          }
+        }
+      }
+    }
+
+    this._lastModelJson = JSON.parse(JSON.stringify(modifiedModelJson));
+
+    const modelBlob = new Blob([JSON.stringify(modifiedModelJson)], { type: 'application/json' });
+    return this._toLocalBlobUrl(modelBlob, 'application/json');
+  },
+
+  async _buildLocalModelDataUrl(modelData: StoredLive2DModel): Promise<string> {
+    const modifiedModelJson = JSON.parse(JSON.stringify(modelData?.modelJson || {}));
+    this._normalizeLegacyCubism2Settings(modifiedModelJson);
+
+    const mapFile = async (
+      payload: Blob | ArrayBuffer | null,
+      pathHint: unknown,
+      fallbackMime = 'application/octet-stream',
+    ): Promise<string | null> => {
+      if (!payload) return null;
+      const mimeType =
+        payload instanceof Blob ? payload.type || this._guessMimeTypeByPath(pathHint, fallbackMime) : this._guessMimeTypeByPath(pathHint, fallbackMime);
+      return await this._toLocalDataUrl(payload, mimeType || fallbackMime);
+    };
+
+    const isModel3 = !!modifiedModelJson?.FileReferences;
+    if (isModel3) {
+      const refs = modifiedModelJson.FileReferences;
+      if (refs && typeof refs === 'object') {
+        const mocUrl = await mapFile(modelData?.moc3 ?? null, refs.Moc, 'application/octet-stream');
+        if (mocUrl) refs.Moc = mocUrl;
+
+        if (Array.isArray(refs.Textures)) {
+          for (let index = 0; index < refs.Textures.length; index++) {
+            const texturePath = refs.Textures[index];
+            const textureBlob = this._findStoredTextureBlob(modelData, texturePath, index);
+            const textureUrl = await mapFile(textureBlob, texturePath, 'image/png');
+            if (textureUrl) refs.Textures[index] = textureUrl;
+          }
+        }
+
+        const physicsUrl = await mapFile(modelData?.physics ?? null, refs.Physics, 'application/json');
+        if (physicsUrl && typeof refs.Physics === 'string') refs.Physics = physicsUrl;
+        const poseUrl = await mapFile(modelData?.pose ?? null, refs.Pose, 'application/json');
+        if (poseUrl && typeof refs.Pose === 'string') refs.Pose = poseUrl;
+
+        if (!refs.Motions || typeof refs.Motions !== 'object') {
+          refs.Motions = {};
+        }
+        if (modelData?.motions && typeof modelData.motions === 'object') {
+          for (const [groupName, motionListRaw] of Object.entries(modelData.motions)) {
+            const motionList = Array.isArray(motionListRaw) ? motionListRaw : [];
+            if (!Array.isArray((refs as any).Motions[groupName])) {
+              (refs as any).Motions[groupName] = [];
+            }
+            const targetList = (refs as any).Motions[groupName] as any[];
+
+            for (let index = 0; index < motionList.length; index++) {
+              const storedMotion = motionList[index];
+              const existingDef = targetList[index];
+              const motionPath =
+                (existingDef && typeof existingDef === 'object'
+                  ? (existingDef as any).File || (existingDef as any).file
+                  : existingDef) ||
+                storedMotion?.name;
+              const motionData =
+                this._findStoredMotionData(modelData, groupName, motionPath, index) ?? storedMotion?.data ?? null;
+              const motionUrl = await mapFile(motionData, motionPath || storedMotion?.name, 'application/json');
+              if (!motionUrl) continue;
+
+              if (existingDef && typeof existingDef === 'object') {
+                if (typeof (existingDef as any).File === 'string') (existingDef as any).File = motionUrl;
+                else (existingDef as any).file = motionUrl;
+                const existingName = String((existingDef as any).Name || (existingDef as any).name || '').trim();
+                if (!existingName) {
+                  (existingDef as any).Name = this._getPathBaseName(motionPath || storedMotion?.name);
+                }
+              } else if (typeof existingDef === 'string') {
+                targetList[index] = motionUrl;
+              } else {
+                targetList.push({
+                  Name: this._getPathBaseName(storedMotion?.name || motionPath || `motion_${index + 1}`),
+                  File: motionUrl,
+                });
+              }
+            }
+          }
+        }
+
+        if (!Array.isArray(refs.Expressions)) {
+          refs.Expressions = [];
+        }
+        if (Array.isArray(modelData?.expressions)) {
+          for (let index = 0; index < modelData.expressions.length; index++) {
+            const storedExpr = modelData.expressions[index];
+            const existingDef = refs.Expressions[index];
+            const exprPath =
+              (existingDef && typeof existingDef === 'object'
+                ? (existingDef as any).File || (existingDef as any).file
+                : existingDef) ||
+              storedExpr?.file ||
+              storedExpr?.name;
+            const exprData =
+              this._findStoredExpressionData(modelData, exprPath, index) ?? storedExpr?.data ?? null;
+            const exprUrl = await mapFile(exprData, exprPath || storedExpr?.name, 'application/json');
+            if (!exprUrl) continue;
+
+            if (existingDef && typeof existingDef === 'object') {
+              if (typeof (existingDef as any).File === 'string') (existingDef as any).File = exprUrl;
+              else (existingDef as any).file = exprUrl;
+              const existingName = String((existingDef as any).Name || (existingDef as any).name || '').trim();
+              if (!existingName) {
+                (existingDef as any).Name = this._getPathBaseName(storedExpr?.name || exprPath);
+              }
+            } else if (typeof existingDef === 'string') {
+              refs.Expressions[index] = exprUrl;
+            } else {
+              refs.Expressions.push({
+                Name: this._getPathBaseName(storedExpr?.name || exprPath || `expression_${index + 1}`),
+                File: exprUrl,
+              });
+            }
+          }
+        }
+      }
+    } else {
+      const mocPath = modifiedModelJson.model || modifiedModelJson.Model;
+      const mocUrl = await mapFile(modelData?.moc ?? null, mocPath, 'application/octet-stream');
+      if (mocUrl) {
+        if (typeof modifiedModelJson.model === 'string') modifiedModelJson.model = mocUrl;
+        else if (typeof modifiedModelJson.Model === 'string') modifiedModelJson.Model = mocUrl;
+        else modifiedModelJson.model = mocUrl;
+      }
+
+      const textureList = modifiedModelJson.textures || modifiedModelJson.Textures;
+      if (Array.isArray(textureList)) {
+        for (let index = 0; index < textureList.length; index++) {
+          const texturePath = textureList[index];
+          const textureBlob = this._findStoredTextureBlob(modelData, texturePath, index);
+          const textureUrl = await mapFile(textureBlob, texturePath, 'image/png');
+          if (textureUrl) textureList[index] = textureUrl;
+        }
+      }
+
+      const physicsPath = modifiedModelJson.physics || modifiedModelJson.Physics;
+      const physicsUrl = await mapFile(modelData?.physics ?? null, physicsPath, 'application/json');
+      if (physicsUrl) {
+        if (typeof modifiedModelJson.physics === 'string') modifiedModelJson.physics = physicsUrl;
+        if (typeof modifiedModelJson.Physics === 'string') modifiedModelJson.Physics = physicsUrl;
+      }
+
+      const posePath = modifiedModelJson.pose || modifiedModelJson.Pose;
+      const poseUrl = await mapFile(modelData?.pose ?? null, posePath, 'application/json');
+      if (poseUrl) {
+        if (typeof modifiedModelJson.pose === 'string') modifiedModelJson.pose = poseUrl;
+        if (typeof modifiedModelJson.Pose === 'string') modifiedModelJson.Pose = poseUrl;
+      }
+
+      const motions = modifiedModelJson.motions || modifiedModelJson.Motions;
+      if (motions && typeof motions === 'object') {
+        for (const groupName of Object.keys(motions)) {
+          const motionList = motions[groupName];
+          if (!Array.isArray(motionList)) continue;
+          for (let index = 0; index < motionList.length; index++) {
+            const motionDef = motionList[index];
+            const motionPath =
+              typeof motionDef === 'string' ? motionDef : (motionDef as any)?.file || (motionDef as any)?.File;
+            const motionData = this._findStoredMotionData(modelData, groupName, motionPath, index);
+            const motionUrl = await mapFile(motionData, motionPath, 'application/octet-stream');
+            if (!motionUrl) continue;
+
+            if (typeof motionDef === 'string') {
+              motionList[index] = motionUrl;
+            } else if (typeof (motionDef as any).file === 'string') {
+              (motionDef as any).file = motionUrl;
+            } else {
+              (motionDef as any).File = motionUrl;
+            }
+          }
+        }
+      }
+
+      const expressions = modifiedModelJson.expressions || modifiedModelJson.Expressions;
+      if (Array.isArray(expressions)) {
+        for (let index = 0; index < expressions.length; index++) {
+          const exprDef = expressions[index];
+          const exprPath = typeof exprDef === 'string' ? exprDef : (exprDef as any)?.file || (exprDef as any)?.File;
+          const exprData = this._findStoredExpressionData(modelData, exprPath, index);
+          const exprUrl = await mapFile(exprData, exprPath, 'application/json');
+          if (!exprUrl) continue;
+
+          if (typeof exprDef === 'string') {
+            expressions[index] = exprUrl;
+          } else if (typeof (exprDef as any).file === 'string') {
+            (exprDef as any).file = exprUrl;
+          } else {
+            (exprDef as any).File = exprUrl;
+          }
+        }
+      }
+    }
+
+    this._lastModelJson = JSON.parse(JSON.stringify(modifiedModelJson));
+
+    const modelBlob = new Blob([JSON.stringify(modifiedModelJson)], { type: 'application/json' });
+    return await this._blobToDataUrl(modelBlob);
   },
 
   _encodePathSegment(segment: string): string {
@@ -793,8 +1647,9 @@ export const Live2DManager = {
   },
 
   /**
-   * 从远程 URL 加载模型。
-   * 核心流程：拉取 model JSON -> 重写相对资源路径 -> 生成 data URL -> 交给 Live2DModel.from。
+   * 加载模型（兼容远程 URL + 本地协议路径）。
+   * - 远程: 拉取 model JSON，重写资源路径，按 runtime 路由加载
+   * - 本地: 从 IndexedDB 读取上传模型，构建 blob/data URL，按 runtime 路由加载
    */
   async loadModel(
     modelPath: string,
@@ -810,6 +1665,48 @@ export const Live2DManager = {
       });
     };
 
+    const loadWithRuntime = async (
+      modelUrl: string,
+      runtimeInfo: Record<string, any> | null,
+      contextLabel: string,
+      progressStart: number,
+      progressSuffix = '',
+    ): Promise<{
+      model: any;
+      texturesReady: boolean;
+      runtimeInfo: {
+        runtimeType: Live2DRuntimeType;
+        cubismVersion: number | null;
+        moc3Version?: number | null;
+      };
+    }> => {
+      const resolvedRuntime = await this._ensureRuntimeDependencies(runtimeInfo, contextLabel);
+      const PIXI = this._getPIXI();
+      const Live2DModel = this._getLive2DModelClass(resolvedRuntime.runtimeType);
+      if (!PIXI || !Live2DModel) {
+        throw new Error(`Live2D 运行时不可用（${contextLabel}）`);
+      }
+
+      this._registerTickerForRuntime(Live2DModel, PIXI);
+      reportProgress(progressStart, `实例化模型${progressSuffix}`);
+      const model = await this._createModelWithTimeout(Live2DModel, modelUrl);
+      reportProgress(progressStart + 10, `加载模型纹理${progressSuffix}`);
+      const texturesReady = await this._waitForTextures(model, (loadedCount, totalCount) => {
+        if (totalCount <= 0) return;
+        const ratio = Math.max(0, Math.min(1, loadedCount / totalCount));
+        reportProgress(
+          progressStart + 10 + ratio * 10,
+          `加载模型纹理 ${loadedCount}/${totalCount}${progressSuffix}`,
+        );
+      });
+
+      return {
+        model,
+        texturesReady,
+        runtimeInfo: resolvedRuntime,
+      };
+    };
+
     reportProgress(2, '准备加载模型');
     if (!this.isReady) {
       reportProgress(8, '初始化 Live2D 引擎');
@@ -820,127 +1717,222 @@ export const Live2DManager = {
       }
     }
 
-    const runtime = Live2DLoader.getRuntime(this._top()) ?? this._runtime;
-    const PIXI = runtime?.pixi ?? this._getPIXI();
-    const Live2DModel = runtime?.live2dModel ?? PIXI?.live2d?.Live2DModel;
-    if (!PIXI || !Live2DModel) {
-      reportProgress(100, 'Live2D 运行时缺失');
-      error('Live2D 运行时缺失，无法加载模型');
-      return false;
-    }
-
-    reportProgress(12, '解析模型地址');
-    // 构建完整 URL
-    let modelUrl: string;
-    if (modelPath.startsWith('http://') || modelPath.startsWith('https://')) {
-      modelUrl = modelPath;
-    } else {
-      modelUrl = `${LIVE2D_CDN_BASE}${modelPath}`;
-    }
-
-    modelUrl = this._normalizeRemoteUrl(modelUrl);
-
     try {
       log('开始加载模型:', modelPath);
-      reportProgress(18, '清理旧模型');
-
-      // 销毁旧模型
+      reportProgress(14, '清理旧模型');
       this.destroyModel();
+      this._revokeLocalBlobUrls();
 
-      const modelUrlCandidates = this._buildModelUrlCandidates(modelUrl);
       let model: any = null;
       let texturesReady = false;
-      let loadedFromUrl = modelUrl;
+      let loadedFrom = modelPath;
       let lastError: unknown = null;
 
-      for (let i = 0; i < modelUrlCandidates.length; i++) {
-        const candidateUrl = modelUrlCandidates[i];
-        let attemptModel: any = null;
-        let attemptTexturesReady = false;
-        const attemptLabel = modelUrlCandidates.length > 1
-          ? ` (${i + 1}/${modelUrlCandidates.length})`
-          : '';
-        const attemptProgressStart = 24 + Math.floor((i / modelUrlCandidates.length) * 38);
+      if (this._isLocalModelPath(modelPath)) {
+        reportProgress(20, '读取本地模型');
+        const localModelId = this._normalizeLocalModelId(modelPath);
+        const localModelData = await getLive2DModel(localModelId);
+        if (!localModelData) {
+          throw new Error('未找到已上传的本地模型，请先上传 ZIP 模型');
+        }
 
+        this._lastModelJson = JSON.parse(JSON.stringify(localModelData.modelJson || {}));
+        this._lastModelJsonSourceUrl = modelPath;
+
+        let runtimeInfo = this._setRuntimeInfo(localModelData);
+        if (localModelData.moc3) {
+          runtimeInfo = await this._detectRuntimeFromMoc3(localModelData.moc3, runtimeInfo);
+        }
+
+        const buildLocalUrl = async (preferBlob: boolean): Promise<string> => {
+          if (!preferBlob) {
+            return await this._buildLocalModelDataUrl(localModelData);
+          }
+          const supported = await this._supportsXhrBlobUrls();
+          if (!supported) {
+            return await this._buildLocalModelDataUrl(localModelData);
+          }
+          return await this._buildLocalModelBlobUrl(localModelData);
+        };
+
+        let usedBlobUrl = false;
         try {
-          if (i > 0) {
-            log('主地址加载失败，尝试镜像地址:', candidateUrl);
-          }
+          reportProgress(30, '构建本地模型资源');
+          const localUrl = await buildLocalUrl(true);
+          usedBlobUrl = String(localUrl || '').startsWith('blob:');
+          const loaded = await loadWithRuntime(localUrl, runtimeInfo, 'local-model', 42, ' (本地)');
+          model = loaded.model;
+          texturesReady = loaded.texturesReady;
+          runtimeInfo = loaded.runtimeInfo;
+          loadedFrom = modelPath;
+        } catch (localError) {
+          lastError = localError;
+          warn('本地模型加载失败，尝试回退', localError);
 
-          reportProgress(attemptProgressStart, `下载模型配置${attemptLabel}`);
-          const dataUrl = await this._buildRemoteModelDataUrl(candidateUrl);
-          reportProgress(attemptProgressStart + 12, `实例化模型${attemptLabel}`);
-          try {
-            attemptModel = await this._createModelWithTimeout(Live2DModel, dataUrl);
-          } catch (fromError) {
-            warn('首次实例化模型失败，尝试强制代理资源重试', fromError);
-            reportProgress(attemptProgressStart + 16, `实例化失败，代理重试${attemptLabel}`);
-            const proxyDataUrl = await this._buildRemoteModelDataUrl(candidateUrl, true);
-            attemptModel = await this._createModelWithTimeout(Live2DModel, proxyDataUrl);
-            log('强制代理资源重试后模型实例化成功');
-          }
-
-          reportProgress(attemptProgressStart + 22, `加载模型纹理${attemptLabel}`);
-          attemptTexturesReady = await this._waitForTextures(attemptModel, (loadedCount, totalCount) => {
-            if (totalCount <= 0) {
-              return;
-            }
-            const textureRatio = Math.max(0, Math.min(1, loadedCount / totalCount));
-            const textureProgress = attemptProgressStart + 22 + textureRatio * 14;
-            reportProgress(textureProgress, `加载模型纹理 ${loadedCount}/${totalCount}${attemptLabel}`);
-          });
-          if (!attemptTexturesReady) {
-            warn('纹理未完全加载，尝试通过代理重试模型资源');
-            reportProgress(attemptProgressStart + 36, `纹理补载重试${attemptLabel}`);
+          if (usedBlobUrl) {
+            this._disableXhrBlobUrls('local-load-failed');
+            this._revokeLocalBlobUrls();
             try {
-              const proxyDataUrl = await this._buildRemoteModelDataUrl(candidateUrl, true);
-              const proxyModel = await this._createModelWithTimeout(Live2DModel, proxyDataUrl);
-              const proxyTexturesReady = await this._waitForTextures(proxyModel, (loadedCount, totalCount) => {
-                if (totalCount <= 0) {
-                  return;
-                }
-                const textureRatio = Math.max(0, Math.min(1, loadedCount / totalCount));
-                const textureProgress = attemptProgressStart + 36 + textureRatio * 8;
-                reportProgress(textureProgress, `代理纹理补载 ${loadedCount}/${totalCount}${attemptLabel}`);
-              });
-              if (proxyTexturesReady) {
-                try {
-                  attemptModel.destroy();
-                } catch {
-                  // ignore
-                }
-                attemptModel = proxyModel;
-                attemptTexturesReady = true;
-                log('代理重试后纹理加载成功');
-              } else {
-                warn('代理重试后纹理仍未完全加载，继续使用首次加载结果');
-                try {
-                  proxyModel.destroy();
-                } catch {
-                  // ignore
+              const localDataUrl = await buildLocalUrl(false);
+              const loaded = await loadWithRuntime(
+                localDataUrl,
+                runtimeInfo,
+                'local-model-data-fallback',
+                46,
+                ' (本地 DataURL 回退)',
+              );
+              model = loaded.model;
+              texturesReady = loaded.texturesReady;
+              runtimeInfo = loaded.runtimeInfo;
+              loadedFrom = `${modelPath}#data`;
+              lastError = null;
+            } catch (dataFallbackError) {
+              lastError = dataFallbackError;
+            }
+          }
+
+          const shouldForceCubism5 =
+            !model && this._isCoreParseError(lastError) && runtimeInfo.runtimeType === LIVE2D_RUNTIME_TYPES.LEGACY;
+          if (shouldForceCubism5) {
+            warn('local legacy runtime 解析失败，尝试 Cubism5 runtime 重试', lastError);
+            this._revokeLocalBlobUrls();
+            try {
+              const forcedRuntime = {
+                ...runtimeInfo,
+                runtimeType: LIVE2D_RUNTIME_TYPES.CUBISM5,
+                cubismVersion: 5,
+              };
+              const retryLocalUrl = await buildLocalUrl(false);
+              const loaded = await loadWithRuntime(
+                retryLocalUrl,
+                forcedRuntime,
+                'local-force-cubism5-retry',
+                50,
+                ' (强制 Cubism5 重试)',
+              );
+              model = loaded.model;
+              texturesReady = loaded.texturesReady;
+              loadedFrom = `${modelPath}#cubism5`;
+              lastError = null;
+            } catch (forcedRetryError) {
+              lastError = forcedRetryError;
+            }
+          }
+        }
+
+        if (!model) {
+          throw (lastError instanceof Error ? lastError : new Error('本地模型加载失败'));
+        }
+      } else {
+        reportProgress(20, '解析远程模型地址');
+        let modelUrl: string;
+        if (modelPath.startsWith('http://') || modelPath.startsWith('https://')) {
+          modelUrl = modelPath;
+        } else {
+          modelUrl = `${LIVE2D_CDN_BASE}${modelPath}`;
+        }
+        modelUrl = this._normalizeRemoteUrl(modelUrl);
+
+        const modelUrlCandidates = this._buildModelUrlCandidates(modelUrl);
+        for (let i = 0; i < modelUrlCandidates.length; i++) {
+          const candidateUrl = modelUrlCandidates[i];
+          const attemptLabel =
+            modelUrlCandidates.length > 1 ? ` (${i + 1}/${modelUrlCandidates.length})` : '';
+          const attemptProgressStart = 24 + Math.floor((i / Math.max(1, modelUrlCandidates.length)) * 36);
+          let attemptModel: any = null;
+          let attemptTexturesReady = false;
+          let attemptError: unknown = null;
+
+          const tryCreate = async (dataUrl: string, suffix = ''): Promise<void> => {
+            const runtimeHint = this._runtimeInfo;
+            const loaded = await loadWithRuntime(
+              dataUrl,
+              runtimeHint,
+              `remote:${candidateUrl}`,
+              attemptProgressStart + 10,
+              `${attemptLabel}${suffix}`,
+            );
+            attemptModel = loaded.model;
+            attemptTexturesReady = loaded.texturesReady;
+          };
+
+          try {
+            if (i > 0) {
+              log('主地址加载失败，尝试镜像地址:', candidateUrl);
+            }
+
+            reportProgress(attemptProgressStart, `下载模型配置${attemptLabel}`);
+            const dataUrl = await this._buildRemoteModelDataUrl(candidateUrl);
+            await tryCreate(dataUrl);
+          } catch (firstError) {
+            attemptError = firstError;
+            if (this._isCoreParseError(firstError) && this._runtimeType === LIVE2D_RUNTIME_TYPES.LEGACY) {
+              warn('remote legacy runtime 解析失败，尝试 Cubism5 runtime 重试', firstError);
+              try {
+                const forcedRuntime = {
+                  ...this._runtimeInfo,
+                  runtimeType: LIVE2D_RUNTIME_TYPES.CUBISM5,
+                  cubismVersion: 5,
+                };
+                const dataUrl = await this._buildRemoteModelDataUrl(candidateUrl);
+                const loaded = await loadWithRuntime(
+                  dataUrl,
+                  forcedRuntime,
+                  `remote-force-cubism5:${candidateUrl}`,
+                  attemptProgressStart + 12,
+                  `${attemptLabel} (强制 Cubism5 重试)`,
+                );
+                attemptModel = loaded.model;
+                attemptTexturesReady = loaded.texturesReady;
+                attemptError = null;
+              } catch (forcedRetryError) {
+                attemptError = forcedRetryError;
+              }
+            }
+
+            if (!attemptModel) {
+              warn('首次实例化失败，尝试强制代理资源重试', firstError);
+              try {
+                reportProgress(attemptProgressStart + 6, `代理重试${attemptLabel}`);
+                const proxyDataUrl = await this._buildRemoteModelDataUrl(candidateUrl, true);
+                await tryCreate(proxyDataUrl, ' (代理)');
+                attemptError = null;
+              } catch (proxyError) {
+                attemptError = proxyError;
+                if (this._isCoreParseError(proxyError) && this._runtimeType === LIVE2D_RUNTIME_TYPES.LEGACY) {
+                  try {
+                    const forcedRuntime = {
+                      ...this._runtimeInfo,
+                      runtimeType: LIVE2D_RUNTIME_TYPES.CUBISM5,
+                      cubismVersion: 5,
+                    };
+                    const proxyDataUrl = await this._buildRemoteModelDataUrl(candidateUrl, true);
+                    const loaded = await loadWithRuntime(
+                      proxyDataUrl,
+                      forcedRuntime,
+                      `remote-force-cubism5-proxy:${candidateUrl}`,
+                      attemptProgressStart + 14,
+                      `${attemptLabel} (代理强制 Cubism5 重试)`,
+                    );
+                    attemptModel = loaded.model;
+                    attemptTexturesReady = loaded.texturesReady;
+                    attemptError = null;
+                  } catch (proxyForcedRetryError) {
+                    attemptError = proxyForcedRetryError;
+                  }
                 }
               }
-            } catch (retryError) {
-              warn('代理重试加载失败，继续使用首次加载结果', retryError);
             }
           }
 
-          if (!attemptTexturesReady) {
-            const hasNextCandidate = i < modelUrlCandidates.length - 1;
-            if (hasNextCandidate) {
-              warn('纹理仍未完全加载，将尝试备用地址:', candidateUrl);
-              reportProgress(attemptProgressStart + 44, `纹理加载失败，切换备用地址${attemptLabel}`);
-              throw new Error('纹理加载失败，尝试备用地址');
-            }
-            warn('纹理仍未完全加载，且已无备用地址可尝试，模型可能不可见');
+          if (attemptModel) {
+            model = attemptModel;
+            texturesReady = attemptTexturesReady;
+            loadedFrom = candidateUrl;
+            lastError = null;
+            break;
           }
 
-          model = attemptModel;
-          texturesReady = attemptTexturesReady;
-          loadedFromUrl = candidateUrl;
-          lastError = null;
-          break;
-        } catch (attemptError) {
           lastError = attemptError;
           warn(`模型地址尝试失败 (${i + 1}/${modelUrlCandidates.length})`, candidateUrl, attemptError);
           try {
@@ -949,10 +1941,10 @@ export const Live2DManager = {
             // ignore
           }
         }
-      }
 
-      if (!model) {
-        throw (lastError instanceof Error ? lastError : new Error('模型加载失败'));
+        if (!model) {
+          throw (lastError instanceof Error ? lastError : new Error('远程模型加载失败'));
+        }
       }
 
       this.model = model;
@@ -966,14 +1958,15 @@ export const Live2DManager = {
         this.modelBaseWidth = model.width > 0 ? model.width : 500;
         this.modelBaseHeight = model.height > 0 ? model.height : 800;
       }
+
       reportProgress(95, '整理模型数据');
       log('模型表情统计', this.getExpressions());
       log('模型动作组统计', this.getMotionGroups());
       if (!texturesReady) {
         warn('模型已挂载，但纹理可能未完全可用');
       }
-      if (loadedFromUrl !== modelUrl) {
-        log('模型已通过镜像地址加载:', loadedFromUrl);
+      if (loadedFrom !== modelPath) {
+        log('模型已通过回退路径加载:', loadedFrom);
       }
       reportProgress(100, '模型加载完成');
       log('模型加载成功');
@@ -1128,6 +2121,45 @@ export const Live2DManager = {
         }
       }
     }
+
+    let runtimeHint = this._setRuntimeInfo({
+      ...this._runtimeInfo,
+      modelJson: modifiedModelJson,
+    });
+
+    if (modifiedModelJson?.FileReferences?.Moc) {
+      const remoteMocUrl = String(modifiedModelJson.FileReferences.Moc || '').trim();
+      if (remoteMocUrl) {
+        try {
+          const mocResponse = await this._fetchWithTimeout(
+            remoteMocUrl,
+            { method: 'GET', cache: 'no-store' },
+            12000,
+          );
+          if (mocResponse.ok) {
+            const mocBuffer = await mocResponse.arrayBuffer();
+            runtimeHint = await this._detectRuntimeFromMoc3(mocBuffer, runtimeHint);
+          } else {
+            warn(`远程 moc3 探测跳过（HTTP ${mocResponse.status}）`, remoteMocUrl);
+          }
+        } catch (mocProbeError) {
+          warn('远程 moc3 探测失败', mocProbeError);
+        }
+      }
+    } else {
+      runtimeHint = this._setRuntimeInfo({
+        ...runtimeHint,
+        runtimeType: LIVE2D_RUNTIME_TYPES.LEGACY,
+        cubismVersion: runtimeHint.cubismVersion ?? 2,
+      });
+    }
+
+    log('远程模型 runtime 路由提示', {
+      sourceModelUrl,
+      runtimeType: runtimeHint.runtimeType,
+      cubismVersion: runtimeHint.cubismVersion,
+      moc3Version: (runtimeHint as any)?.moc3Version ?? null,
+    });
 
     // 缓存最终的 model json（用于在运行时无法枚举表情/动作时兜底展示）
     this._lastModelJson = modifiedModelJson;
@@ -1376,28 +2408,44 @@ export const Live2DManager = {
    */
   playMotion(group?: string, index?: number): void {
     if (!this.model) return;
-    try {
-      const runMotion = (groupName: string, motionIndex: number) => {
-        try {
-          this.model.motion(groupName, motionIndex);
+    const runMotionWithRuntimeFallback = (groupName: string, motionIndex: number) => {
+      try {
+        this.model.motion(groupName, motionIndex);
+        return;
+      } catch (firstError) {
+        const mm = this.model?.internalModel?.motionManager as any;
+        if (typeof mm?.startMotion === 'function') {
+          mm.startMotion(groupName, motionIndex, 3);
           return;
-        } catch (firstError) {
-          const mm = this.model?.internalModel?.motionManager as any;
-          if (typeof mm?.startMotion === 'function') {
-            mm.startMotion(groupName, motionIndex, 3);
-            return;
-          }
-          if (typeof mm?.startRandomMotion === 'function') {
-            mm.startRandomMotion(groupName, 3);
-            return;
-          }
-          throw firstError;
         }
-      };
+        if (typeof mm?.startRandomMotion === 'function') {
+          mm.startRandomMotion(groupName, 3);
+          return;
+        }
+        throw firstError;
+      }
+    };
 
+    const tryRecoverByKnownEntries = (): boolean => {
+      try {
+        const motions = this.getMotions();
+        if (!motions.length) return false;
+        const preferred =
+          motions.find((item) => item.group === String(group ?? '') && item.index === (index ?? 0)) ||
+          motions.find((item) => String(item.group || '').trim().toLowerCase() === 'default') ||
+          motions[0];
+        if (!preferred) return false;
+        runMotionWithRuntimeFallback(preferred.group, preferred.index);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    try {
       // 允许空字符串动作组（部分模型的 motions key 为 ""）
       if (typeof group === 'string') {
-        runMotion(group, index ?? 0);
+        runMotionWithRuntimeFallback(group, index ?? 0);
       } else {
         const groups = this.getMotionGroups();
         const groupNames = Object.keys(groups);
@@ -1405,10 +2453,14 @@ export const Live2DManager = {
           const randGroup = groupNames[Math.floor(Math.random() * groupNames.length)];
           const count = groups[randGroup];
           const randIndex = Math.floor(Math.random() * count);
-          runMotion(randGroup, randIndex);
+          runMotionWithRuntimeFallback(randGroup, randIndex);
         }
       }
     } catch (e) {
+      if (typeof group === 'string' && this.model) {
+        const recovered = tryRecoverByKnownEntries();
+        if (recovered) return;
+      }
       warn('播放动作失败:', e);
     }
   },
@@ -2007,6 +3059,7 @@ export const Live2DManager = {
     this.modelBaseBounds = null;
     this._lastModelJson = null;
     this._lastModelJsonSourceUrl = '';
+    this._revokeLocalBlobUrls();
   },
 
   /**
@@ -2070,6 +3123,14 @@ export const Live2DManager = {
     });
   },
 };
+
+
+
+
+
+
+
+
 
 
 
