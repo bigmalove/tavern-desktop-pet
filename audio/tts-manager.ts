@@ -94,6 +94,23 @@ function safeUrl(input: unknown): URL | null {
   }
 }
 
+function safeArray<T = any>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
+function safeObject<T extends object = Record<string, any>>(value: unknown): T {
+  return (value && typeof value === 'object' && !Array.isArray(value) ? value : {}) as T;
+}
+
+function normalizePathSepForGpt(path: unknown): string {
+  return String(path || '').replace(/\\+/g, '/').trim();
+}
+
+function looksLikeAbsoluteFsPath(path: unknown): boolean {
+  const text = String(path || '');
+  return /^[a-zA-Z]:[\\/]/.test(text) || text.startsWith('/');
+}
+
 function hasLive2D(): boolean {
   return !!Live2DManager.model;
 }
@@ -348,19 +365,229 @@ export const TTSManager = {
     return null;
   },
 
+  _resolveGptSoVitsServerPath(pathStr: unknown, cfg: any = null): string {
+    const raw = normalizePathSepForGpt(pathStr);
+    if (!raw) return '';
+    if (/^https?:\/\//i.test(raw)) return raw;
+    if (looksLikeAbsoluteFsPath(raw)) return raw;
+
+    const resolvedCfg = safeObject<any>(cfg || getGptSoVitsConfig());
+    const prefix = normalizePathSepForGpt(resolvedCfg.importPathPrefix || resolvedCfg.rootDir || '');
+    if (!prefix || !looksLikeAbsoluteFsPath(prefix)) return raw;
+
+    const root = prefix.replace(/[\\/]+$/g, '');
+    const tail = raw.replace(/^[\\/]+/g, '');
+    return tail ? `${root}/${tail}` : root;
+  },
+
+  _buildGptSoVitsRefAudioPathCandidates(pathStr: unknown, options: unknown = null): string[] {
+    const opts = safeObject<any>(options);
+    const modelCfg = safeObject<any>(opts.modelCfg);
+    const voiceCfg = safeObject<any>(opts.voiceCfg);
+    const rawSeed = normalizePathSepForGpt(pathStr);
+    const rawFromVoice = normalizePathSepForGpt(opts.rawRefPath || voiceCfg.refAudioPath || '');
+
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const addOne = (value: unknown) => {
+      const next = normalizePathSepForGpt(value);
+      if (!next || seen.has(next)) return;
+      seen.add(next);
+      out.push(next);
+    };
+    const addPath = (value: unknown) => {
+      const next = normalizePathSepForGpt(value);
+      if (!next) return;
+      addOne(next);
+      try {
+        addOne(next.normalize('NFC'));
+      } catch {
+        // ignore
+      }
+      try {
+        addOne(next.normalize('NFD'));
+      } catch {
+        // ignore
+      }
+      try {
+        addOne(next.normalize('NFKC'));
+      } catch {
+        // ignore
+      }
+      try {
+        addOne(next.normalize('NFKD'));
+      } catch {
+        // ignore
+      }
+      addOne(next.replace(/\//g, '\\'));
+      addOne(next.replace(/\\/g, '/'));
+    };
+    const dirname = (input: unknown): string => {
+      const next = normalizePathSepForGpt(input);
+      if (!next) return '';
+      const index = next.lastIndexOf('/');
+      if (index <= 0) return '';
+      return next.slice(0, index);
+    };
+    const basename = (input: unknown): string => {
+      const next = normalizePathSepForGpt(input);
+      if (!next) return '';
+      const index = next.lastIndexOf('/');
+      return index < 0 ? next : next.slice(index + 1);
+    };
+    const extractDrive = (input: unknown): string => {
+      const matched = String(input || '').match(/^([a-zA-Z]):[\\/]/);
+      return matched ? matched[1].toUpperCase() : '';
+    };
+
+    const seedSources: string[] = [];
+    const pushSeed = (value: unknown) => {
+      const next = normalizePathSepForGpt(value);
+      if (!next || seedSources.includes(next)) return;
+      seedSources.push(next);
+    };
+
+    pushSeed(rawSeed);
+    pushSeed(rawFromVoice);
+    pushSeed(modelCfg?.paths?.defaultRefAudioPath);
+    for (const ref of safeArray<any>(modelCfg?.refAudios)) {
+      pushSeed(ref?.path);
+    }
+
+    for (const seed of seedSources) {
+      addPath(seed);
+    }
+
+    const mainSeed = seedSources[0] || '';
+    const fileName = basename(mainSeed);
+    const segments = normalizePathSepForGpt(mainSeed).split('/').filter(Boolean);
+    const tail2 = segments.length >= 2 ? `${segments[segments.length - 2]}/${segments[segments.length - 1]}` : '';
+    const tail3 =
+      segments.length >= 3
+        ? `${segments[segments.length - 3]}/${segments[segments.length - 2]}/${segments[segments.length - 1]}`
+        : '';
+
+    const weightPaths = ([] as unknown[])
+      .concat([
+        voiceCfg.gptWeightsPath,
+        voiceCfg.sovitsWeightsPath,
+        modelCfg?.paths?.gptWeightsPath,
+        modelCfg?.paths?.sovitsWeightsPath,
+      ])
+      .map(value => normalizePathSepForGpt(value))
+      .filter(Boolean);
+
+    const weightDirs: string[] = [];
+    for (const weightPath of weightPaths) {
+      const dir = dirname(weightPath);
+      if (dir && !weightDirs.includes(dir)) {
+        weightDirs.push(dir);
+      }
+    }
+
+    for (const dir of weightDirs) {
+      if (fileName) addPath(`${dir}/${fileName}`);
+      if (tail2) addPath(`${dir}/${tail2}`);
+      if (tail3) addPath(`${dir}/${tail3}`);
+    }
+
+    const seedDrive = extractDrive(mainSeed);
+    const altDrives: string[] = [];
+    for (const weightPath of weightPaths) {
+      const drive = extractDrive(weightPath);
+      if (drive && drive !== seedDrive && !altDrives.includes(drive)) {
+        altDrives.push(drive);
+      }
+    }
+    if (seedDrive) {
+      const snapshot = out.slice();
+      for (const item of snapshot) {
+        if (!new RegExp(`^${seedDrive}:`, 'i').test(item)) continue;
+        for (const drive of altDrives) {
+          addPath(item.replace(new RegExp(`^${seedDrive}:`, 'i'), `${drive}:`));
+        }
+      }
+    }
+
+    const wavePairs: Array<[string, string]> = [
+      ['\u301C', '\uFF5E'],
+      ['\u301C', '~'],
+      ['\uFF5E', '\u301C'],
+      ['\uFF5E', '~'],
+      ['~', '\u301C'],
+      ['~', '\uFF5E'],
+    ];
+    for (const [from, to] of wavePairs) {
+      const snapshot = out.slice();
+      for (const item of snapshot) {
+        if (!item.includes(from)) continue;
+        addPath(item.split(from).join(to));
+      }
+    }
+
+    return out.slice(0, 64);
+  },
+
   _isProxyUrl(url: unknown): boolean {
     const parsed = safeUrl(url);
     if (!parsed) return false;
     return /^\/proxy(\/|\?|$)/i.test(parsed.pathname);
   },
 
+  _getGptSoVitsProxyUrlFromHelpers(directUrl: string): string {
+    const url = String(directUrl || '').trim();
+    if (!url) return '';
+
+    const topAny: any = getTopWindow() as any;
+    const helperFns = [
+      topAny?.getCorsProxyUrl,
+      topAny?.enableCorsProxy,
+      topAny?.corsProxy?.getProxyUrl,
+      (window as any)?.getCorsProxyUrl,
+      (window as any)?.enableCorsProxy,
+      (window as any)?.corsProxy?.getProxyUrl,
+    ].filter(fn => typeof fn === 'function');
+
+    for (const fn of helperFns) {
+      try {
+        const proxied = fn.call(topAny, url);
+        if (typeof proxied === 'string' && proxied.trim()) return proxied.trim();
+      } catch {
+        // ignore
+      }
+    }
+
+    return '';
+  },
+
   _buildGptSoVitsProxyUrl(route: string, originalUrl: string): string {
     const direct = String(originalUrl || '').trim();
     if (!direct) return '';
+
+    const topAny: any = getTopWindow() as any;
+    const origin = String(topAny?.location?.origin || window.location?.origin || '').replace(/\/+$/, '');
     const encoded = encodeURIComponent(direct);
-    const origin = window.location?.origin || '';
+
+    const buildProxyPathRawTarget = (url: string): string => {
+      const raw = String(url || '').trim();
+      if (!raw) return '';
+      const noHash = raw.split('#')[0] || raw;
+      const qIdx = noHash.indexOf('?');
+      if (qIdx < 0) return noHash;
+      const base = noHash.slice(0, qIdx);
+      const query = noHash.slice(qIdx + 1);
+      return `${base}%3F${query.replace(/&/g, '%26').replace(/=/g, '%3D')}`;
+    };
+
+    const rawTarget = buildProxyPathRawTarget(direct);
 
     switch (route) {
+      case 'helper':
+        return this._getGptSoVitsProxyUrlFromHelpers(direct);
+      case 'proxy_path_raw_relative':
+        return rawTarget ? `/proxy/${rawTarget}` : '';
+      case 'proxy_path_raw_origin':
+        return origin && rawTarget ? `${origin}/proxy/${rawTarget}` : '';
       case 'proxy_path_relative':
         return `/proxy/${encoded}`;
       case 'proxy_path_origin':
@@ -369,6 +596,8 @@ export const TTSManager = {
         return `/proxy?url=${encoded}`;
       case 'proxy_query_origin':
         return origin ? `${origin}/proxy?url=${encoded}` : '';
+      case 'direct':
+        return direct;
       default:
         return '';
     }
@@ -378,7 +607,7 @@ export const TTSManager = {
     if (!route) return;
     if (this._gptSoVitsResolvedProxyRoute !== route) {
       this._gptSoVitsResolvedProxyRoute = route;
-      console.log(`[${SCRIPT_NAME}] GPT-SoVITS 浠ｇ悊璺敱宸查攣瀹? ${route} -> ${clipText(url, 96)}`);
+      console.log(`[${SCRIPT_NAME}] GPT-SoVITS 代理路由已锁定: ${route} -> ${clipText(url, 96)}`);
     }
   },
 
@@ -387,42 +616,17 @@ export const TTSManager = {
     if (!directUrl) return directUrl;
     if (this._isProxyUrl(directUrl)) return directUrl;
 
-    const topAny: any = getTopWindow() as any;
-
-    if (typeof topAny.getCorsProxyUrl === 'function') {
-      try {
-        const proxied = topAny.getCorsProxyUrl(directUrl);
-        if (typeof proxied === 'string' && proxied) return proxied;
-      } catch {
-        // ignore
-      }
-    }
-
-    if (typeof topAny.enableCorsProxy === 'function') {
-      try {
-        const proxied = topAny.enableCorsProxy(directUrl);
-        if (typeof proxied === 'string' && proxied) return proxied;
-      } catch {
-        // ignore
-      }
-    }
-
-    if (topAny.corsProxy?.getProxyUrl) {
-      try {
-        const proxied = topAny.corsProxy.getProxyUrl(directUrl);
-        if (typeof proxied === 'string' && proxied) return proxied;
-      } catch {
-        // ignore
-      }
-    }
+    const helperUrl = this._getGptSoVitsProxyUrlFromHelpers(directUrl);
+    if (helperUrl) return helperUrl;
 
     const remembered = String(this._gptSoVitsResolvedProxyRoute || '').trim();
-    if (remembered) {
+    if (remembered && remembered !== 'direct') {
       const rememberedUrl = this._buildGptSoVitsProxyUrl(remembered, directUrl);
       if (rememberedUrl) return rememberedUrl;
     }
 
     return (
+      this._buildGptSoVitsProxyUrl('proxy_path_raw_relative', directUrl) ||
       this._buildGptSoVitsProxyUrl('proxy_path_relative', directUrl) ||
       this._buildGptSoVitsProxyUrl('proxy_query_relative', directUrl) ||
       directUrl
@@ -439,13 +643,21 @@ export const TTSManager = {
     try {
       const url = new URL(base + endpoint);
       const modelCfg: any = (resolvedVoice as any)?.gptSoVitsModel || null;
+      const refs = safeArray<any>(modelCfg?.refAudios);
+      const defaultRefPath = String(modelCfg?.paths?.defaultRefAudioPath || '').trim();
+      const defaultRef =
+        refs.find(item => item?.path === defaultRefPath) ||
+        refs.find(item => String(item?.id || '').trim() === String(modelCfg?.defaultRefId || '').trim()) ||
+        refs[0] ||
+        null;
       const modelParams: any = modelCfg?.params || {};
       const vcfg: any = resolvedVoice?.gptSoVits || {};
 
       const textLang = String(vcfg.textLang || modelParams.textLang || cfg.textLang || 'auto').trim() || 'auto';
-      const promptLang = String(vcfg.promptLang || modelParams.promptLang || 'zh').trim() || 'zh';
-      const refAudioPath = String(vcfg.refAudioPath || '').trim();
-      const promptText = String(vcfg.promptText || modelParams.promptText || '').trim();
+      const promptLang = String(vcfg.promptLang || defaultRef?.promptLang || modelParams.promptLang || 'zh').trim() || 'zh';
+      const refAudioPathRaw = String(defaultRef?.path || defaultRefPath || vcfg.refAudioPath || '').trim();
+      const refAudioPath = this._resolveGptSoVitsServerPath(refAudioPathRaw, cfg);
+      const promptText = String(vcfg.promptText || defaultRef?.promptText || modelParams.promptText || '').trim();
       const textSplitMethod = String(vcfg.textSplitMethod || modelParams.textSplitMethod || cfg.textSplitMethod || '').trim();
       const mediaType = String(vcfg.mediaType || modelParams.mediaType || cfg.mediaType || '').trim();
       const streamingMode = !!(vcfg.streamingMode ?? modelParams.streamingMode ?? cfg.streamingMode);
@@ -504,6 +716,9 @@ export const TTSManager = {
       };
 
       if (preferred) addTarget(preferred, this._buildGptSoVitsProxyUrl(preferred, directUrl));
+      addTarget('helper', this._buildGptSoVitsProxyUrl('helper', directUrl));
+      addTarget('proxy_path_raw_relative', this._buildGptSoVitsProxyUrl('proxy_path_raw_relative', directUrl));
+      addTarget('proxy_path_raw_origin', this._buildGptSoVitsProxyUrl('proxy_path_raw_origin', directUrl));
       addTarget('proxy_path_relative', this._buildGptSoVitsProxyUrl('proxy_path_relative', directUrl));
       addTarget('proxy_path_origin', this._buildGptSoVitsProxyUrl('proxy_path_origin', directUrl));
       addTarget('proxy_query_relative', this._buildGptSoVitsProxyUrl('proxy_query_relative', directUrl));
@@ -611,8 +826,14 @@ export const TTSManager = {
     const setModelEndpoint = String(
       vcfg.setModelEndpoint || modelParams.setModelEndpoint || cfg.setModelEndpoint || '/set_model',
     ).trim() || '/set_model';
-    const desiredGpt = String(vcfg.gptWeightsPath || modelPaths.gptWeightsPath || '').trim();
-    const desiredSovits = String(vcfg.sovitsWeightsPath || modelPaths.sovitsWeightsPath || '').trim();
+    const desiredGpt = this._resolveGptSoVitsServerPath(
+      String(vcfg.gptWeightsPath || modelPaths.gptWeightsPath || '').trim(),
+      cfg,
+    );
+    const desiredSovits = this._resolveGptSoVitsServerPath(
+      String(vcfg.sovitsWeightsPath || modelPaths.sovitsWeightsPath || '').trim(),
+      cfg,
+    );
 
     if (switchMode === 'none') return false;
     if (!desiredGpt && !desiredSovits) return true;
@@ -785,12 +1006,23 @@ export const TTSManager = {
   async _speakWithGptSoVits(segment: TTSSegment, segmentId: string, resolvedVoice: TTSSpeakerVoice): Promise<boolean> {
     const cfg = getGptSoVitsConfig();
     const vcfg: any = resolvedVoice?.gptSoVits || {};
+    const modelCfg: any = (resolvedVoice as any)?.gptSoVitsModel || null;
 
     if (!cfg.apiUrl) {
       showToast('GPT-SoVITS: 请先在设置中填写 API 地址');
       return false;
     }
-    if (!String(vcfg.refAudioPath || '').trim()) {
+
+    const refs = safeArray<any>(modelCfg?.refAudios);
+    const defaultRefPath = String(modelCfg?.paths?.defaultRefAudioPath || '').trim();
+    const defaultRef =
+      refs.find(item => item?.path === defaultRefPath) ||
+      refs.find(item => String(item?.id || '').trim() === String(modelCfg?.defaultRefId || '').trim()) ||
+      refs[0] ||
+      null;
+    const refAudioRaw = String(defaultRef?.path || defaultRefPath || vcfg.refAudioPath || '').trim();
+    const refAudioPath = this._resolveGptSoVitsServerPath(refAudioRaw, cfg);
+    if (!refAudioPath) {
       showToast('GPT-SoVITS: 当前音色缺少 refAudioPath');
       return false;
     }
@@ -803,17 +1035,70 @@ export const TTSManager = {
       return false;
     }
 
-    const directUrl = this._buildGptSoVitsTtsUrl(segment.text, resolvedVoice);
-    if (!directUrl) {
+    const requestText = String(segment.text || '');
+    const refAudioPathCandidatesSeed = this._buildGptSoVitsRefAudioPathCandidates(refAudioPath, {
+      cfg,
+      modelCfg,
+      voiceCfg: vcfg,
+      rawRefPath: refAudioRaw,
+    });
+    const refAudioPathCandidates: string[] = [];
+    const seenRefAudioPath = new Set<string>();
+    const addRefAudioPathCandidate = (pathStr: unknown) => {
+      const normalized = normalizePathSepForGpt(pathStr);
+      if (!normalized || seenRefAudioPath.has(normalized)) return;
+      seenRefAudioPath.add(normalized);
+      refAudioPathCandidates.push(normalized);
+    };
+    addRefAudioPathCandidate(refAudioRaw);
+    addRefAudioPathCandidate(refAudioPath);
+    for (const path of refAudioPathCandidatesSeed) {
+      addRefAudioPathCandidate(path);
+      addRefAudioPathCandidate(this._resolveGptSoVitsServerPath(path, cfg));
+    }
+    if (refAudioPathCandidates.length === 0) {
+      refAudioPathCandidates.push(refAudioPath);
+    }
+
+    const directUrlCandidates: string[] = [];
+    const seenDirectUrl = new Set<string>();
+    for (const candidateRefPath of refAudioPathCandidates) {
+      const voiceForRequest = {
+        ...resolvedVoice,
+        gptSoVits: {
+          ...(resolvedVoice as any)?.gptSoVits,
+          refAudioPath: candidateRefPath,
+        },
+      } as TTSSpeakerVoice;
+      const directUrl = this._buildGptSoVitsTtsUrl(requestText, voiceForRequest);
+      if (!directUrl || seenDirectUrl.has(directUrl)) continue;
+      seenDirectUrl.add(directUrl);
+      directUrlCandidates.push(directUrl);
+    }
+
+    if (directUrlCandidates.length === 0) {
       showToast('GPT-SoVITS: 无法生成请求URL');
       return false;
     }
 
-    const audioUrl = cfg.useCorsProxy ? this._getProxiedAudioUrl(directUrl) : directUrl;
-
+    const audioUrlCandidates: string[] = [];
+    const seenAudioUrl = new Set<string>();
+    const addAudioUrl = (url: unknown) => {
+      const next = String(url || '').trim();
+      if (!next || seenAudioUrl.has(next)) return;
+      seenAudioUrl.add(next);
+      audioUrlCandidates.push(next);
+    };
+    for (const directUrl of directUrlCandidates) {
+      if (cfg.useCorsProxy) {
+        addAudioUrl(this._getProxiedAudioUrl(directUrl));
+      }
+      // 代理失败时自动回退直连（可避免 /proxy 返回 HTML 导致 NotSupportedError）
+      addAudioUrl(directUrl);
+    }
+    console.log(`[${SCRIPT_NAME}] GPT-SoVITS audio candidates`, audioUrlCandidates.map(item => clipText(item, 180)));
     const audio = new Audio();
     audio.crossOrigin = 'anonymous';
-    audio.src = audioUrl;
 
     this.currentAudio = audio;
     this.currentSegmentId = segmentId;
@@ -834,17 +1119,44 @@ export const TTSManager = {
       onEnded();
     };
 
-    audio.addEventListener('ended', onEnded, { once: true });
-    audio.addEventListener('error', onError, { once: true });
+    let playError: unknown = null;
+    let started = false;
+    for (let i = 0; i < audioUrlCandidates.length; i += 1) {
+      const nextUrl = audioUrlCandidates[i];
+      if (!nextUrl) continue;
+      audio.src = nextUrl;
+      try {
+        await audio.play();
+        started = true;
+        if (i > 0) {
+          console.warn(`[${SCRIPT_NAME}] GPT-SoVITS refAudioPath fallback hit`, {
+            candidateIndex: i,
+            totalCandidates: audioUrlCandidates.length,
+          });
+        }
+        break;
+      } catch (e) {
+        playError = e;
+      }
+    }
 
-    try {
-      await audio.play();
-    } catch (e) {
-      console.warn(`[${SCRIPT_NAME}] GPT-SoVITS: play() 失败`, e);
-      showToast('GPT-SoVITS 播放被浏览器拦截（需要用户交互）');
+    if (!started) {
+      const msg = String((playError as any)?.message || '').toLowerCase();
+      const blockedByAutoplay = /autoplay|notallowederror|user.*interact|play\(\) failed/i.test(msg);
+      console.warn(`[${SCRIPT_NAME}] GPT-SoVITS: play() 失败`, playError);
+      showToast(
+        blockedByAutoplay
+          ? 'GPT-SoVITS 播放被浏览器拦截（需要用户交互）'
+          : cfg.useCorsProxy
+            ? 'GPT-SoVITS 播放失败（代理/直连均失败，请检查 /proxy、CORS 与 refAudioPath）'
+            : 'GPT-SoVITS 播放失败（请检查 refAudioPath 路径）',
+      );
       onEnded();
       return false;
     }
+
+    audio.addEventListener('ended', onEnded, { once: true });
+    audio.addEventListener('error', onError, { once: true });
 
     this.isPlaying = true;
 

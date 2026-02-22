@@ -80,6 +80,7 @@ export const Commentator = {
         !!s.emotionCotEnabled,
         roleplayOptions,
         diceReferenceOptions,
+        !!s.ttsBilingualZhJaEnabled,
       );
 
       this._latestStreamText = '';
@@ -157,6 +158,7 @@ export const Commentator = {
         !!s.emotionCotEnabled,
         roleplayOptions,
         diceReferenceOptions,
+        !!s.ttsBilingualZhJaEnabled,
       );
 
       this._latestStreamText = '';

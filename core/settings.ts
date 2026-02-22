@@ -127,6 +127,7 @@ const SettingsSchema = z
     // TTS provider
     ttsProvider: z.enum(['littlewhitebox', 'gpt_sovits_v2', 'edge_tts_direct']).default('littlewhitebox'),
     ttsAutoPlay: z.boolean().default(true),
+    ttsBilingualZhJaEnabled: z.boolean().default(DEFAULTS.TTS_BILINGUAL_ZH_JA_ENABLED),
     phoneMessageAutoRead: z.boolean().default(DEFAULTS.PHONE_MESSAGE_AUTO_READ),
     baibaiPhoneMessageAutoRead: z.boolean().default(DEFAULTS.BAIBAI_PHONE_MESSAGE_AUTO_READ),
     ttsDefaultSpeaker: z.string().default(''),

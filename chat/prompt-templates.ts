@@ -91,6 +91,18 @@ function appendEmotionCotFormat(responseFormat: string): string {
   );
 }
 
+function appendZhJaBilingualFormat(responseFormat: string): string {
+  return (
+    `${responseFormat}\n\n` +
+    `【中日双语输出格式（TTS 专用）】\n` +
+    `- 正文必须使用：中文文本【JP】日文文本\n` +
+    `- 如果启用表情 COT，整体仍为：桌面宠物[表情|语气]: 正文\n` +
+    `- 气泡显示将使用【JP】前的中文文本\n` +
+    `- TTS 将使用【JP】后的日文文本\n` +
+    `- 避免输出多余分隔符或额外注释`
+  );
+}
+
 function buildRoleplayInstruction(roleplay?: RoleplayPromptOptions): string {
   const roleName = String(roleplay?.roleName || '').trim();
   if (!roleName) {
@@ -157,6 +169,7 @@ export function buildPrompt(
   emotionCotEnabled = false,
   roleplay?: RoleplayPromptOptions,
   diceReference?: DiceReferencePromptOptions,
+  bilingualZhJaEnabled = false,
 ): { system: string; user: string } {
   const ignoreStyleByRoleplay = shouldIgnoreStyleByRoleplay(roleplay);
   const { systemPrompt, responseFormat } = ignoreStyleByRoleplay
@@ -166,7 +179,12 @@ export function buildPrompt(
       }
     : resolvePromptTemplate(style, customPrompt);
   const responseFormatWithAdvice = appendDiceAdviceRequirement(responseFormat, diceReference);
-  const finalFormat = emotionCotEnabled ? appendEmotionCotFormat(responseFormatWithAdvice) : responseFormatWithAdvice;
+  const responseFormatWithEmotion = emotionCotEnabled
+    ? appendEmotionCotFormat(responseFormatWithAdvice)
+    : responseFormatWithAdvice;
+  const finalFormat = bilingualZhJaEnabled
+    ? appendZhJaBilingualFormat(responseFormatWithEmotion)
+    : responseFormatWithEmotion;
   const roleplayInstruction = buildRoleplayInstruction(roleplay);
   const diceReferenceInstruction = buildDiceReferenceInstruction(diceReference);
 
@@ -199,6 +217,7 @@ export function buildChatPrompt(
   emotionCotEnabled = false,
   roleplay?: RoleplayPromptOptions,
   diceReference?: DiceReferencePromptOptions,
+  bilingualZhJaEnabled = false,
 ): { system: string; user: string } {
   const ignoreStyleByRoleplay = shouldIgnoreStyleByRoleplay(roleplay);
   const { systemPrompt } = ignoreStyleByRoleplay
@@ -208,7 +227,12 @@ export function buildChatPrompt(
     : resolvePromptTemplate(style, customPrompt);
   const responseFormat = ignoreStyleByRoleplay ? '用1-3句话回复用户，不超过80字。' : getChatResponseFormat(style);
   const responseFormatWithAdvice = appendDiceAdviceRequirement(responseFormat, diceReference);
-  const finalFormat = emotionCotEnabled ? appendEmotionCotFormat(responseFormatWithAdvice) : responseFormatWithAdvice;
+  const responseFormatWithEmotion = emotionCotEnabled
+    ? appendEmotionCotFormat(responseFormatWithAdvice)
+    : responseFormatWithAdvice;
+  const finalFormat = bilingualZhJaEnabled
+    ? appendZhJaBilingualFormat(responseFormatWithEmotion)
+    : responseFormatWithEmotion;
   const roleplayInstruction = buildRoleplayInstruction(roleplay);
   const diceReferenceInstruction = buildDiceReferenceInstruction(diceReference);
   const roleName = String(roleplay?.roleName || '').trim();

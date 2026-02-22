@@ -50,6 +50,7 @@ import { storeToRefs } from 'pinia';
 import { onMounted, onUnmounted, ref, watch } from 'vue';
 import { getTTSEnabled } from '../audio/tts-config';
 import { TTSManager } from '../audio/tts-manager';
+import { splitZhJaForDisplayAndTts } from '../chat/bilingual-text';
 import { Commentator } from '../chat/commentator';
 import { parseEmotionCotText } from '../chat/emotion-cot';
 import { ChatMonitor } from '../chat/monitor';
@@ -82,6 +83,7 @@ const OPEN_SETTINGS_FN_KEY = '__desktopPetOpenSettings_v2';
 let globalOpenSettingsFn: (() => void) | null = null;
 
 let modelLoadTaskId = 0;
+let initTaskId = 0;
 let modelLoadingHideTimer: number | null = null;
 let statusCheckTimer: number | null = null;
 let viewportResizeSyncTimer: number | null = null;
@@ -92,6 +94,7 @@ let gazePointerMoveHandler: ((event: PointerEvent) => void) | null = null;
 let gazePointerDownHandler: ((event: PointerEvent) => void) | null = null;
 let gazeFollowRafId: number | null = null;
 let gazePendingPoint: { x: number; y: number } | null = null;
+let petClosed = false;
 
 const showMenu = ref(false);
 const menuAnchor = ref({ x: 0, y: 0 });
@@ -904,6 +907,14 @@ function onManualChat(message: string): void {
 }
 
 function closePet(): void {
+  if (petClosed) return;
+  petClosed = true;
+  initTaskId++;
+  modelLoadTaskId++;
+  clearModelLoadingHideTimer();
+  clearStatusCheckTimer();
+  clearViewportResizeSyncTimer();
+
   showMenu.value = false;
   showModelBrowser.value = false;
   uiStore.closeSettings();
@@ -914,6 +925,13 @@ function closePet(): void {
   unbindBaibaiPhoneTTSBridge();
   ChatMonitor.destroy();
   Commentator.destroy();
+  try {
+    TTSManager.stop();
+    LipSyncManager.cleanup();
+  } catch {
+    // ignore
+  }
+  Live2DStage.hideLoadingProgress();
   Live2DManager.destroyModel();
   Live2DStage.destroy();
 
@@ -1177,8 +1195,10 @@ async function loadModelWithProgress(path: string): Promise<boolean> {
 
 function scheduleStatusCheck(reason: string): void {
   clearStatusCheckTimer();
+  if (petClosed) return;
   statusCheckTimer = window.setTimeout(() => {
     try {
+      if (petClosed) return;
       const top = window.parent ?? window;
       const stageEl = top.document.getElementById('desktop-pet-stage') as HTMLElement | null;
       const rect = stageEl?.getBoundingClientRect?.();
@@ -1241,8 +1261,11 @@ function scheduleStatusCheck(reason: string): void {
 }
 
 async function initPet() {
+  const taskId = ++initTaskId;
+  petClosed = false;
   try {
     log('桌面宠物初始化开始');
+    if (taskId !== initTaskId || petClosed) return;
     const s = settings.value;
 
     try {
@@ -1262,13 +1285,16 @@ async function initPet() {
         stripFromText: settings.value.emotionCotStripFromText !== false,
         configs: settings.value.emotionConfigs,
       });
+      const splitResult = splitZhJaForDisplayAndTts(parsed.cleanText, !!settings.value.ttsBilingualZhJaEnabled);
 
-      bubbleText.value = parsed.cleanText;
+      bubbleText.value = splitResult.displayText;
       bubbleDone.value = isDone;
 
       if (!isDone) return;
-      const finalText = String(parsed.cleanText || '').trim();
+      const finalText = String(splitResult.displayText || '').trim();
       if (!finalText) return;
+      const ttsText = String(splitResult.ttsText || '').trim();
+      if (!ttsText) return;
 
       if (parsed.normalizedTag) {
         const applied = applyEmotionToLive2D(parsed.normalizedTag);
@@ -1283,7 +1309,7 @@ async function initPet() {
       const autoPlay = !!settings.value.ttsAutoPlay;
       const tagLabel = parsed.normalizedTag || '(none)';
       log(
-        `生成完成，TTS检查: enabled=${ttsEnabled}, autoPlay=${autoPlay}, tag=${tagLabel}, textLen=${finalText.length}`,
+        `生成完成，TTS检查: enabled=${ttsEnabled}, autoPlay=${autoPlay}, tag=${tagLabel}, textLen=${finalText.length}, ttsLen=${ttsText.length}, zhJa=${settings.value.ttsBilingualZhJaEnabled}, hasJa=${splitResult.hasJa}`,
       );
       if (!ttsEnabled) return;
       if (!autoPlay) return;
@@ -1311,7 +1337,7 @@ async function initPet() {
             {
               type: 'dialogue',
               speaker,
-              text: finalText,
+              text: ttsText,
               tts: Object.keys(ttsOverrides).length > 0 ? ttsOverrides : undefined,
             },
             `desktop_pet_comment_${Date.now()}`,
@@ -1376,6 +1402,7 @@ async function initPet() {
     log('Live2D 舞台创建完成');
 
     const loaded = await loadModelWithProgress(s.modelPath);
+    if (taskId !== initTaskId || petClosed) return;
     if (loaded) {
       Live2DManager.mountToStage(stageSize.width, stageSize.height, 1);
       log('Live2D 模型挂载完成');
@@ -1396,13 +1423,16 @@ async function initPet() {
     );
 
     log('桌面宠物初始化完成');
+    if (taskId !== initTaskId || petClosed) return;
     scheduleStatusCheck('init');
   } catch (e) {
+    if (taskId !== initTaskId || petClosed) return;
     notifyInitError('桌面宠物初始化异常，请打开控制台查看错误', e);
   }
 }
 
 async function onModelChange(path: string) {
+  if (petClosed) return;
   const nextPath = String(path || '').trim();
   const isLocalModel =
     nextPath.length > 0 &&
@@ -1428,6 +1458,7 @@ async function onModelChange(path: string) {
   }
 
   const loaded = await loadModelWithProgress(path);
+  if (petClosed) return;
   if (loaded) {
     const stageSize = getStageSize(settings.value.petScale);
     Live2DManager.mountToStage(stageSize.width, stageSize.height, 1);
@@ -1487,12 +1518,15 @@ watch(
 );
 
 onMounted(() => {
+  petClosed = false;
   bindViewportResizeRecovery();
   syncGazeFollowBinding();
   initPet();
 });
 
 onUnmounted(() => {
+  petClosed = true;
+  initTaskId++;
   unbindViewportResizeRecovery();
   unbindGlobalGazeFollow(true);
   unregisterGlobalOpenSettings();

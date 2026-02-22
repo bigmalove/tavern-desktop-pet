@@ -679,6 +679,14 @@
 
               <div class="form-group">
                 <label>
+                  <input type="checkbox" v-model="settings.ttsBilingualZhJaEnabled" />
+                  中日双语模式（显示中文，TTS 发送日文）
+                </label>
+                <div class="hint">需模型按“中文文本【JP】日文文本”输出；未命中时自动回退中文朗读。</div>
+              </div>
+
+              <div class="form-group">
+                <label>
                   <input type="checkbox" v-model="settings.phoneMessageAutoRead" />
                   手机消息自动朗读（仅 NPC 文本回复）
                 </label>
@@ -770,53 +778,13 @@
                   <div class="hint">局域网访问建议开启；修改 config 后需重启酒馆进程。</div>
                 </div>
 
-                <div class="form-row">
-                  <div class="form-group half">
-                    <label>text_lang</label>
-                    <input type="text" v-model="settings.gptSoVits.textLang" placeholder="auto/zh/en/ja..." />
-                  </div>
-                  <div class="form-group half">
-                    <label>切分策略</label>
-                    <input type="text" v-model="settings.gptSoVits.textSplitMethod" placeholder="cut5" />
-                  </div>
-                </div>
-
-                <div class="form-row">
-                  <div class="form-group half">
-                    <label>media_type</label>
-                    <select v-model="settings.gptSoVits.mediaType">
-                      <option value="wav">wav</option>
-                      <option value="ogg">ogg</option>
-                      <option value="raw">raw</option>
-                    </select>
-                  </div>
-                  <div class="form-group half">
-                    <label>
-                      <input type="checkbox" v-model="settings.gptSoVits.streamingMode" />
-                      streaming_mode
-                    </label>
-                  </div>
-                </div>
-
-                <div class="form-row">
-                  <div class="form-group half">
-                    <label>speed_factor</label>
-                    <input
-                      type="number"
-                      v-model.number="settings.gptSoVits.speedFactor"
-                      min="0.5"
-                      max="2"
-                      step="0.05"
-                    />
-                  </div>
-                  <div class="form-group half">
-                    <label>模型切换方式</label>
-                    <select v-model="settings.gptSoVits.modelSwitchMode" @change="onGptSwitchModeChange">
-                      <option value="set_weights">set_weights（api_v2.py）</option>
-                      <option value="set_model">set_model（api.py）</option>
-                      <option value="none">不自动切模型</option>
-                    </select>
-                  </div>
+                <div class="form-group">
+                  <label>模型切换方式</label>
+                  <select v-model="settings.gptSoVits.modelSwitchMode" @change="onGptSwitchModeChange">
+                    <option value="set_weights">set_weights（api_v2.py）</option>
+                    <option value="set_model">set_model（api.py）</option>
+                    <option value="none">不自动切模型</option>
+                  </select>
                 </div>
 
                 <div v-if="isGptSetModelMode" class="form-group">
@@ -935,6 +903,7 @@
           <div class="gpt-model-header-actions">
             <button class="btn btn-secondary" type="button" @click="openGptModelManagerImportJson">导入JSON</button>
             <button class="btn btn-secondary" type="button" @click="openGptModelManagerImportFolder">文件夹导入</button>
+
             <button class="btn btn-secondary" type="button" @click="exportGptModelManagerModels">导出JSON</button>
             <button class="btn btn-secondary" type="button" @click="addGptModelManagerModel">添加模型</button>
             <button class="close-btn" type="button" @click="closeGptModelManager">X</button>
@@ -1273,24 +1242,24 @@
 <script setup lang="ts">
 import { storeToRefs } from 'pinia';
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
-import { TTSManager } from '../audio/tts-manager';
 import {
-  inferGptSoVitsModelsFromFolderFiles,
-  inferGptSoVitsVoicesFromFolderFiles,
-  isAbsoluteFileSystemPath,
-  TTS_PROVIDER,
   getGptSoVitsVoiceList,
   getTTSEnabled,
   getTTSVoiceListAsync,
+  inferGptSoVitsModelsFromFolderFiles,
+  inferGptSoVitsVoicesFromFolderFiles,
+  isAbsoluteFileSystemPath,
   normalizeGptSoVitsModelsForStore,
   normalizeGptSoVitsSwitchMode,
   normalizeGptSoVitsVoicesForStore,
   pickFirstUsableGptSoVitsVoice,
   setTTSEnabled,
-  type GptSoVitsRefAudio,
+  TTS_PROVIDER,
   type GptSoVitsModelStoreConfig,
+  type GptSoVitsRefAudio,
   type TTSSpeakerVoice,
 } from '../audio/tts-config';
+import { TTSManager } from '../audio/tts-manager';
 import {
   API_SOURCES,
   COMMENT_STYLES,
@@ -2722,20 +2691,48 @@ function normalizePathSepLocal(input: unknown): string {
   return String(input || '').replace(/\\/g, '/').trim();
 }
 
+function normalizeImportRootPathLocal(input: unknown): string {
+  let normalized = normalizePathSepLocal(input).replace(/[\\/]+$/g, '');
+  if (/^[a-zA-Z]:$/.test(normalized)) normalized = `${normalized}/`;
+  return normalized;
+}
+
+function getRelativeRootNameFromFiles(fileList: ArrayLike<File> | File[]): string {
+  const files = Array.from(fileList || []);
+  for (const file of files) {
+    const rel = String((file as any)?.webkitRelativePath || '').trim().replace(/\\/g, '/');
+    const first = String(rel.split('/')[0] || '').trim();
+    if (first) return first;
+  }
+  return '';
+}
+
+function syncGptImportPrefix(prefixInput: unknown): string {
+  const normalized = normalizeImportRootPathLocal(prefixInput);
+  settings.value.gptSoVits.rootDir = normalized;
+  settings.value.gptSoVits.importPathPrefix = normalized;
+  return normalized;
+}
+
+function promptGptImportPrefix(defaultPrefix: unknown): string {
+  const initial = normalizeImportRootPathLocal(defaultPrefix);
+  const result = window.prompt(
+    '请输入导入根路径（绝对路径）。\n例如你选的是 I:/Downloads/GPT-SoVITS v2 pro plus/MyGO!!!!!/高松灯\n可填写 I:/Downloads/GPT-SoVITS v2 pro plus/MyGO!!!!!\n也可填写 I:/Downloads/GPT-SoVITS v2 pro plus/MyGO!!!!!/高松灯（末尾有无 / 或 \\\\ 都可）',
+    initial || '',
+  );
+  return normalizeImportRootPathLocal(String(result || '').trim());
+}
+
 function onGptSwitchModeChange(): void {
   settings.value.gptSoVits.modelSwitchMode = normalizeGptSoVitsSwitchMode(settings.value.gptSoVits.modelSwitchMode);
 }
 
 function onGptRootDirChange(): void {
-  const nextRoot = normalizePathSepLocal(settings.value.gptSoVits.rootDir);
-  settings.value.gptSoVits.rootDir = nextRoot;
-  settings.value.gptSoVits.importPathPrefix = nextRoot;
+  syncGptImportPrefix(settings.value.gptSoVits.rootDir);
 }
 
 function onGptImportPrefixChange(): void {
-  const nextPrefix = normalizePathSepLocal(settings.value.gptSoVits.importPathPrefix);
-  settings.value.gptSoVits.importPathPrefix = nextPrefix;
-  settings.value.gptSoVits.rootDir = nextPrefix;
+  syncGptImportPrefix(settings.value.gptSoVits.importPathPrefix);
 }
 
 function modelToLegacyVoice(model: any): any | null {
@@ -2827,21 +2824,55 @@ function mergeGptSoVitsVoicesByName(existing: any[], incoming: any[]): any[] {
   return out;
 }
 
+function normalizeGptModelMatchKey(value: unknown): string {
+  let text = String(value || '').trim();
+  if (!text) return '';
+  try {
+    text = text.normalize('NFKC');
+  } catch {
+    // ignore
+  }
+  return text.toLowerCase();
+}
+
 function mergeGptSoVitsModelsByName(existing: any[], incoming: any[]): any[] {
   const out = Array.isArray(existing) ? existing.slice() : [];
-  const used = new Set(out.map(v => String(v?.name || '').trim()).filter(Boolean));
+  const used = new Set(
+    out
+      .map(v => normalizeGptModelMatchKey(v?.name))
+      .filter(Boolean),
+  );
 
   for (const modelRaw of Array.isArray(incoming) ? incoming : []) {
     if (!modelRaw) continue;
     const model = { ...modelRaw };
+
+    const incomingNameKey = normalizeGptModelMatchKey(model?.name);
+    const incomingIdKey = normalizeGptModelMatchKey(model?.id);
+    const hitIndex = out.findIndex(item => {
+      const itemNameKey = normalizeGptModelMatchKey(item?.name);
+      const itemIdKey = normalizeGptModelMatchKey(item?.id);
+      if (incomingNameKey && incomingNameKey === itemNameKey) return true;
+      if (incomingIdKey && incomingIdKey === itemIdKey) return true;
+      return false;
+    });
+
+    if (hitIndex >= 0) {
+      out[hitIndex] = model;
+      const nextNameKey = normalizeGptModelMatchKey(model?.name);
+      if (nextNameKey) used.add(nextNameKey);
+      continue;
+    }
+
     const base = String(model.name || '新模型').trim() || '新模型';
     let name = base;
     let idx = 2;
-    while (used.has(name)) {
+    while (used.has(normalizeGptModelMatchKey(name))) {
       name = `${base}_${idx++}`;
     }
+
     model.name = name;
-    used.add(name);
+    used.add(normalizeGptModelMatchKey(name));
     out.push(model);
   }
 
@@ -2998,6 +3029,8 @@ function openGptModelManagerImportFolder(): void {
   gptModelManagerImportFolderInputRef.value?.click();
 }
 
+
+
 async function onGptModelManagerImportJsonChange(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement | null;
   const file = input?.files?.[0];
@@ -3029,8 +3062,18 @@ async function onGptModelManagerImportFolderChange(event: Event): Promise<void> 
   if (!fileList || fileList.length === 0) return;
 
   try {
-    const prefix = normalizePathSepLocal(settings.value.gptSoVits.importPathPrefix || settings.value.gptSoVits.rootDir || '');
-    const inferred = inferGptSoVitsModelsFromFolderFiles(fileList as any, prefix);
+    const previousPrefix = normalizeImportRootPathLocal(
+      settings.value.gptSoVits.importPathPrefix || settings.value.gptSoVits.rootDir || '',
+    );
+    const prefix = promptGptImportPrefix(previousPrefix);
+    if (!prefix) {
+      toastr.info('已取消导入：未填写导入根路径');
+      return;
+    }
+    syncGptImportPrefix(prefix);
+
+    const rootName = getRelativeRootNameFromFiles(Array.from(fileList));
+    const inferred = inferGptSoVitsModelsFromFolderFiles(fileList as any, prefix, { relativeRootName: rootName });
     if (!inferred || inferred.length === 0) {
       toastr.warning('未识别到可导入模型（至少需要参考音频）');
       return;
@@ -3044,8 +3087,8 @@ async function onGptModelManagerImportFolderChange(event: Event): Promise<void> 
       return p && !isAbsoluteFileSystemPath(p);
     });
     let msg = `已从文件夹导入模型：${inferred.length} 条（请点击保存）`;
-    if (hasRelativePath && !prefix) {
-      msg += '（包含相对路径，建议填写路径前缀）';
+    if (hasRelativePath) {
+      msg += '（部分路径仍为相对路径，请检查导入根路径）';
     }
     toastr.success(msg);
   } catch (e) {
@@ -3314,8 +3357,18 @@ async function onGptModelImportFolderChange(event: Event): Promise<void> {
   if (!fileList || fileList.length === 0) return;
 
   try {
-    const prefix = normalizePathSepLocal(settings.value.gptSoVits.importPathPrefix || settings.value.gptSoVits.rootDir || '');
-    const inferred = inferGptSoVitsModelsFromFolderFiles(fileList as any, prefix);
+    const previousPrefix = normalizeImportRootPathLocal(
+      settings.value.gptSoVits.importPathPrefix || settings.value.gptSoVits.rootDir || '',
+    );
+    const prefix = promptGptImportPrefix(previousPrefix);
+    if (!prefix) {
+      toastr.info('已取消导入：未填写导入根路径');
+      return;
+    }
+    syncGptImportPrefix(prefix);
+
+    const rootName = getRelativeRootNameFromFiles(Array.from(fileList));
+    const inferred = inferGptSoVitsModelsFromFolderFiles(fileList as any, prefix, { relativeRootName: rootName });
     if (!inferred || inferred.length === 0) {
       toastr.warning('未识别到可导入模型（至少需要参考音频）');
       return;
@@ -3337,8 +3390,8 @@ async function onGptModelImportFolderChange(event: Event): Promise<void> {
       return p && !isAbsoluteFileSystemPath(p);
     });
     let msg = `已从文件夹导入模型：${inferred.length} 条`;
-    if (hasRelativePath && !prefix) {
-      msg += '（包含相对路径，建议填写路径前缀）';
+    if (hasRelativePath) {
+      msg += '（部分路径仍为相对路径，请检查导入根路径）';
     }
     toastr.success(msg);
   } catch (e) {
@@ -3391,7 +3444,16 @@ async function onGptImportFolderChange(event: Event): Promise<void> {
   if (!fileList || fileList.length === 0) return;
 
   try {
-    const prefix = normalizePathSepLocal(settings.value.gptSoVits.importPathPrefix || settings.value.gptSoVits.rootDir || '');
+    const previousPrefix = normalizeImportRootPathLocal(
+      settings.value.gptSoVits.importPathPrefix || settings.value.gptSoVits.rootDir || '',
+    );
+    const prefix = promptGptImportPrefix(previousPrefix);
+    if (!prefix) {
+      toastr.info('已取消导入：未填写导入根路径');
+      return;
+    }
+    syncGptImportPrefix(prefix);
+
     const inferred = inferGptSoVitsVoicesFromFolderFiles(fileList as any, prefix);
     if (!inferred || inferred.length === 0) {
       toastr.warning('未识别到可导入音色（至少需要参考音频）');
@@ -3411,8 +3473,8 @@ async function onGptImportFolderChange(event: Event): Promise<void> {
 
     const hasRelativePath = normalizedIncoming.voices.some(v => !isAbsoluteFileSystemPath(v.refAudioPath || ''));
     let msg = `已从文件夹导入：${normalizedIncoming.voices.length} 条`;
-    if (hasRelativePath && !prefix) {
-      msg += '（包含相对路径，建议填写路径前缀）';
+    if (hasRelativePath) {
+      msg += '（部分路径仍为相对路径，请检查导入根路径）';
     }
     toastr.success(msg);
   } catch (e) {
@@ -3673,7 +3735,7 @@ watch(
       ? settings.value.lipSyncManualParamIds.join('\n')
       : '';
     settings.value.gptSoVits.modelSwitchMode = normalizeGptSoVitsSwitchMode(settings.value.gptSoVits.modelSwitchMode);
-    const syncedPrefix = normalizePathSepLocal(
+    const syncedPrefix = normalizeImportRootPathLocal(
       settings.value.gptSoVits.importPathPrefix || settings.value.gptSoVits.rootDir || '',
     );
     settings.value.gptSoVits.rootDir = syncedPrefix;
