@@ -749,25 +749,14 @@
                   <input type="text" v-model="settings.gptSoVits.apiUrl" placeholder="http://127.0.0.1:9880" />
                 </div>
 
-                <div class="form-row">
-                  <div class="form-group half">
-                    <label>GPT-SoVITS 根目录</label>
-                    <input
-                      type="text"
-                      v-model="settings.gptSoVits.rootDir"
-                      placeholder="D:/GPT-SoVITS"
-                      @change="onGptRootDirChange"
-                    />
-                  </div>
-                  <div class="form-group half">
-                    <label>模型总目录 / 路径前缀</label>
-                    <input
-                      type="text"
-                      v-model="settings.gptSoVits.importPathPrefix"
-                      placeholder="D:/模型总目录"
-                      @change="onGptImportPrefixChange"
-                    />
-                  </div>
+                <div class="form-group">
+                  <label>模型总目录 / 路径前缀</label>
+                  <input
+                    type="text"
+                    v-model="settings.gptSoVits.importPathPrefix"
+                    placeholder="D:/模型总目录"
+                    @change="onGptImportPrefixChange"
+                  />
                 </div>
 
                 <div class="form-group">
@@ -2725,10 +2714,6 @@ function promptGptImportPrefix(defaultPrefix: unknown): string {
 
 function onGptSwitchModeChange(): void {
   settings.value.gptSoVits.modelSwitchMode = normalizeGptSoVitsSwitchMode(settings.value.gptSoVits.modelSwitchMode);
-}
-
-function onGptRootDirChange(): void {
-  syncGptImportPrefix(settings.value.gptSoVits.rootDir);
 }
 
 function onGptImportPrefixChange(): void {

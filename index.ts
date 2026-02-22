@@ -7,7 +7,7 @@ import { error as logError, log, warn } from './utils/dom';
 import { SCRIPT_NAME } from './core/constants';
 import { useUiStore } from './core/ui';
 
-const BUILD_TAG = '20260215.04';
+const BUILD_TAG = '20260222.01';
 const LEGACY_MENU_BUTTON_LABELS = new Set(['桌面宠物', '桌面宠物设置']);
 const SETTINGS_LABEL = '桌面宠物设置';
 const OPEN_SETTINGS_FN_KEY = '__desktopPetOpenSettings_v2';
