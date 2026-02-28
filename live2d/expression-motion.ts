@@ -1,5 +1,11 @@
 import { EMPTY_MOTION_GROUP_VALUE, type EmotionTag } from '../core/constants';
 import type { EmotionMotionOverride } from '../core/emotion';
+import {
+  getBuiltinExpressionForTag,
+  getBuiltinMotionForTag,
+  parseBuiltinExpressionToken,
+  parseBuiltinMotionToken,
+} from './builtin-expression-motion';
 
 export const EXPRESSION_LIVE2D_MAP: Record<
   EmotionTag,
@@ -578,7 +584,10 @@ export function collectMotionGroupNames(model: any): string[] {
 
 export function matchLive2DExpression(model: any, targetExpression: EmotionTag, override?: string): string | null {
   const overrideName = String(override || '').trim();
-  if (overrideName) return overrideName;
+  if (overrideName) {
+    if (parseBuiltinExpressionToken(overrideName)) return null;
+    return overrideName;
+  }
 
   const mapping = EXPRESSION_LIVE2D_MAP[targetExpression];
   const candidates = mapping?.expressions || [String(targetExpression || '').toLowerCase()];
@@ -621,6 +630,7 @@ export function matchLive2DMotion(
   if (override && override.enabled === false) return null;
 
   const overrideGroupRaw = String(override?.group ?? '');
+  if (parseBuiltinMotionToken(overrideGroupRaw)) return null;
   const hasEmptyGroupMarker = overrideGroupRaw.trim() === EMPTY_MOTION_GROUP_VALUE;
   const overrideGroup = normalizeMotionOverrideGroup(override?.group);
   const overrideIndexRaw = Number(override?.index);
@@ -743,6 +753,103 @@ export function matchLive2DMotion(
 
   if (groupNames.length > 0) {
     return { group: groupNames[0], index: 0 };
+  }
+
+  return null;
+}
+
+export type Live2DExpressionResolveResult =
+  | { type: 'native'; name: string; source: 'override-native' | 'auto-native' }
+  | { type: 'builtin'; key: string; source: 'override-builtin' | 'auto-builtin' };
+
+export type Live2DMotionResolveResult =
+  | { type: 'native'; group: string; index: number; name?: string; source: 'override-native' | 'auto-native' }
+  | { type: 'builtin'; key: string; source: 'override-builtin' | 'auto-builtin' }
+  | { type: 'disabled'; source: 'override-disabled' };
+
+export function resolveLive2DExpression(
+  model: any,
+  targetExpression: EmotionTag,
+  override?: string,
+): Live2DExpressionResolveResult | null {
+  const overrideName = String(override || '').trim();
+  if (overrideName) {
+    const builtinKey = parseBuiltinExpressionToken(overrideName);
+    if (builtinKey) {
+      return { type: 'builtin', key: builtinKey, source: 'override-builtin' };
+    }
+    return { type: 'native', name: overrideName, source: 'override-native' };
+  }
+
+  const nativeName = matchLive2DExpression(model, targetExpression);
+  if (nativeName) {
+    return { type: 'native', name: nativeName, source: 'auto-native' };
+  }
+
+  const builtinDef = getBuiltinExpressionForTag(targetExpression);
+  if (builtinDef?.key) {
+    return { type: 'builtin', key: builtinDef.key, source: 'auto-builtin' };
+  }
+
+  return null;
+}
+
+export function resolveLive2DMotion(
+  model: any,
+  targetExpression: EmotionTag,
+  override?: EmotionMotionOverride,
+): Live2DMotionResolveResult | null {
+  if (override && override.enabled === false) {
+    return { type: 'disabled', source: 'override-disabled' };
+  }
+
+  const overrideGroupRaw = String(override?.group ?? '');
+  const explicitBuiltin = parseBuiltinMotionToken(overrideGroupRaw);
+  if (explicitBuiltin) {
+    return { type: 'builtin', key: explicitBuiltin, source: 'override-builtin' };
+  }
+
+  const overrideIndexRaw = Number(override?.index);
+  const overrideIndex = Number.isFinite(overrideIndexRaw) ? Math.max(0, Math.floor(overrideIndexRaw)) : 0;
+  const hasExplicitOverride =
+    String(overrideGroupRaw).trim() === EMPTY_MOTION_GROUP_VALUE ||
+    !!normalizeMotionOverrideGroup(overrideGroupRaw) ||
+    overrideIndex > 0;
+
+  if (hasExplicitOverride) {
+    const matched = matchLive2DMotion(model, targetExpression, override);
+    if (matched) {
+      return {
+        type: 'native',
+        group: matched.group,
+        index: matched.index,
+        name: matched.name,
+        source: 'override-native',
+      };
+    }
+
+    return {
+      type: 'native',
+      group: normalizeMotionOverrideGroup(overrideGroupRaw),
+      index: overrideIndex,
+      source: 'override-native',
+    };
+  }
+
+  const nativeMotion = matchLive2DMotion(model, targetExpression);
+  if (nativeMotion) {
+    return {
+      type: 'native',
+      group: nativeMotion.group,
+      index: nativeMotion.index,
+      name: nativeMotion.name,
+      source: 'auto-native',
+    };
+  }
+
+  const builtinDef = getBuiltinMotionForTag(targetExpression);
+  if (builtinDef?.key) {
+    return { type: 'builtin', key: builtinDef.key, source: 'auto-builtin' };
   }
 
   return null;

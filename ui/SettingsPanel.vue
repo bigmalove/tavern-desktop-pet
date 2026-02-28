@@ -540,8 +540,8 @@
                         >
                           {{ cfg.live2dExpression }}（自定义）
                         </option>
-                        <option v-for="expr in live2dExpressionOptions" :key="expr" :value="expr">
-                          {{ expr }}
+                        <option v-for="opt in live2dExpressionSelectOptions" :key="opt.key" :value="opt.value">
+                          {{ opt.label }}
                         </option>
                       </select>
 
@@ -1266,7 +1266,16 @@ import {
 import { createDefaultEmotionConfigs, parseAliasesText, type EmotionConfig } from '../core/emotion';
 import { useSettingsStore } from '../core/settings';
 import { deleteLive2DModel, getLive2DModel, hasLive2DModel, type StoredLive2DModel } from '../db/live2d-models';
-import { matchLive2DExpression, matchLive2DMotion } from '../live2d/expression-motion';
+import {
+  getBuiltinExpressionByKey,
+  getBuiltinExpressionOptions,
+  getBuiltinMotionByKey,
+  getBuiltinMotionOptions,
+  makeBuiltinExpressionToken,
+  makeBuiltinMotionToken,
+  parseBuiltinMotionToken,
+} from '../live2d/builtin-expression-motion';
+import { resolveLive2DExpression, resolveLive2DMotion } from '../live2d/expression-motion';
 import { Live2DManager } from '../live2d/manager';
 import { Live2DStage } from '../live2d/stage';
 import { Live2DUploader } from '../live2d/uploader';
@@ -1690,8 +1699,42 @@ const live2dExpressionOptions = computed(() => {
   return list.sort((a, b) => a.localeCompare(b));
 });
 
+type ExpressionSelectOption = {
+  key: string;
+  value: string;
+  label: string;
+};
+
+const live2dExpressionSelectOptions = computed<ExpressionSelectOption[]>(() => {
+  const options: ExpressionSelectOption[] = [];
+  const seen = new Set<string>();
+
+  for (const expr of live2dExpressionOptions.value) {
+    const value = String(expr || '').trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    options.push({
+      key: `native_expr_${value}`.replace(/\s+/g, '_'),
+      value,
+      label: value,
+    });
+  }
+
+  for (const builtin of getBuiltinExpressionOptions()) {
+    if (!builtin?.token || seen.has(builtin.token)) continue;
+    seen.add(builtin.token);
+    options.push({
+      key: `builtin_expr_${builtin.key}`,
+      value: builtin.token,
+      label: `${builtin.label}（内置）`,
+    });
+  }
+
+  return options.sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'));
+});
+
 const live2dExpressionOptionSet = computed(() => {
-  return new Set(live2dExpressionOptions.value);
+  return new Set(live2dExpressionSelectOptions.value.map(option => option.value));
 });
 
 type MotionOverridePayload = {
@@ -1819,6 +1862,11 @@ function getMotionOverrideValue(cfg: EmotionConfig): string {
 function getMotionOverrideLabel(cfg: EmotionConfig): string {
   const payload = resolveMotionOverridePayload(cfg);
   if (!payload) return '';
+  const builtinKey = parseBuiltinMotionToken(payload.group);
+  if (builtinKey) {
+    const builtinDef = getBuiltinMotionByKey(builtinKey);
+    return builtinDef ? `${builtinDef.label}（内置动作）` : `内置动作 ${builtinKey}`;
+  }
   if (payload.name) {
     const groupLabel = payload.group ? `${payload.group}#${payload.index}` : `#${payload.index}`;
     return `${payload.name}（动作 ${groupLabel}）`;
@@ -1880,6 +1928,23 @@ const live2dMotionSelectOptions = computed<Array<MotionSelectOption>>(() => {
     });
   }
 
+  for (const builtin of getBuiltinMotionOptions()) {
+    const token = makeBuiltinMotionToken(builtin.key);
+    const value = encodeMotionOption({
+      group: token,
+      index: 0,
+      name: builtin.label,
+      explicitEmptyGroup: false,
+    });
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    options.push({
+      key: `builtin_motion_${builtin.key}`,
+      value,
+      label: `${builtin.label}（内置动作）`,
+    });
+  }
+
   return options.sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'));
 });
 
@@ -1911,6 +1976,7 @@ let previewDragStart = { x: 0, y: 0 };
 let previewDragOrigin = { x: 0, y: 0 };
 let previewMountPromise: Promise<boolean> | null = null;
 let previewResizeObserver: ResizeObserver | null = null;
+let previewAutoMotionLoopEnabled = true;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -1954,15 +2020,6 @@ function applyPreviewViewport(): void {
   }
   model.x = previewBasePose.x + previewPanOffsetX;
   model.y = previewBasePose.y + previewPanOffsetY;
-
-  try {
-    const app = (Live2DStage as any).app;
-    if (app?.renderer && app?.stage) {
-      app.renderer.render(app.stage);
-    }
-  } catch {
-    // ignore
-  }
 }
 
 function resetPreviewViewport(): void {
@@ -2114,6 +2171,11 @@ async function ensurePreviewMounted(): Promise<boolean> {
       return false;
     }
 
+    previewAutoMotionLoopEnabled = Live2DManager.autoMotionLoopEnabled !== false;
+    Live2DManager.setAutoMotionLoopEnabled(false);
+    Live2DManager.stopBuiltinMotion();
+    Live2DManager.stopCurrentMotion('preview-enter');
+
     previewMounted.value = true;
     bindPreviewViewportEvents();
     bindPreviewResizeObserver();
@@ -2136,10 +2198,12 @@ async function ensurePreviewMounted(): Promise<boolean> {
   return previewMountPromise;
 }
 
-function cleanupPreviewMount(): void {
+function cleanupPreviewMount(reloadModel = true): void {
   disconnectPreviewResizeObserver();
   unbindPreviewViewportEvents();
   previewIsDragging = false;
+  Live2DManager.stopBuiltinMotion();
+  Live2DManager.stopCurrentMotion('preview-cleanup');
 
   if (!previewMounted.value) return;
   previewMounted.value = false;
@@ -2147,6 +2211,13 @@ function cleanupPreviewMount(): void {
   const restored = Live2DStage.popMount();
   if (restored && Live2DManager.model) {
     Live2DManager.mountToStage(restored.width, restored.height, 1);
+  }
+  Live2DManager.setAutoMotionLoopEnabled(previewAutoMotionLoopEnabled);
+  if (reloadModel) {
+    const currentPath = String(settings.value.modelPath || '').trim();
+    if (currentPath) {
+      emit('model-change', currentPath);
+    }
   }
   previewStatus.value = '切换到“表情”后自动加载预览';
 }
@@ -2173,7 +2244,7 @@ watch(
 );
 
 onBeforeUnmount(() => {
-  cleanupPreviewMount();
+  cleanupPreviewMount(false);
 });
 
 const modelList = ref<string[]>([]);
@@ -2557,9 +2628,10 @@ function autoMatchLive2DOverrides(overwrite = false): void {
   for (const cfg of settings.value.emotionConfigs as any as EmotionConfig[]) {
     const exprOverride = String(cfg.live2dExpression || '').trim();
     if (overwrite || !exprOverride) {
-      const matched = matchLive2DExpression(model, cfg.tag);
-      if (matched) {
-        cfg.live2dExpression = matched;
+      const resolvedExpr = resolveLive2DExpression(model, cfg.tag);
+      if (resolvedExpr) {
+        cfg.live2dExpression =
+          resolvedExpr.type === 'builtin' ? makeBuiltinExpressionToken(resolvedExpr.key) : resolvedExpr.name;
         filled += 1;
       }
     }
@@ -2567,10 +2639,14 @@ function autoMatchLive2DOverrides(overwrite = false): void {
     const motionEnabled = cfg.live2dMotion?.enabled !== false;
     const motionGroupOverride = String(cfg.live2dMotion?.group || '').trim();
     if (motionEnabled && (overwrite || !motionGroupOverride)) {
-      const matchedMotion = matchLive2DMotion(model, cfg.tag);
-      if (matchedMotion) {
-        cfg.live2dMotion.group = matchedMotion.group;
-        cfg.live2dMotion.index = matchedMotion.index;
+      const resolvedMotion = resolveLive2DMotion(model, cfg.tag);
+      if (resolvedMotion?.type === 'native') {
+        cfg.live2dMotion.group = resolvedMotion.group;
+        cfg.live2dMotion.index = resolvedMotion.index;
+        filled += 1;
+      } else if (resolvedMotion?.type === 'builtin') {
+        cfg.live2dMotion.group = makeBuiltinMotionToken(resolvedMotion.key);
+        cfg.live2dMotion.index = 0;
         filled += 1;
       }
     }
@@ -2626,25 +2702,36 @@ async function previewEmotion(tag: EmotionTag): Promise<void> {
   applyPreviewViewport();
 
   const cfg = (settings.value.emotionConfigs as any as EmotionConfig[]).find(c => c.tag === tag);
-  const expr = matchLive2DExpression(model, tag, cfg?.live2dExpression);
-  if (expr) {
-    Live2DManager.playExpression(expr);
+  const exprResolved = resolveLive2DExpression(model, tag, cfg?.live2dExpression);
+  let exprText = '表情: (无匹配)';
+  if (exprResolved?.type === 'native') {
+    Live2DManager.playExpression(exprResolved.name);
+    exprText = `表情: ${exprResolved.name}`;
+  } else if (exprResolved?.type === 'builtin') {
+    Live2DManager.applyBuiltinExpression(exprResolved.key);
+    const builtinDef = getBuiltinExpressionByKey(exprResolved.key);
+    exprText = `表情: ${builtinDef?.label || exprResolved.key}（内置）`;
   }
 
-  const motion = matchLive2DMotion(model, tag, cfg?.live2dMotion);
-  if (motion) {
-    Live2DManager.playMotion(motion.group, motion.index);
+  const motionResolved = resolveLive2DMotion(model, tag, cfg?.live2dMotion);
+  let motionText = '动作: (无匹配)';
+  if (motionResolved?.type === 'native') {
+    Live2DManager.playMotion(motionResolved.group, motionResolved.index);
+    motionText = motionResolved.name
+      ? `动作: ${motionResolved.name} (${motionResolved.group || '(空动作组)'}#${motionResolved.index})`
+      : `动作: ${motionResolved.group || '(空动作组)'}#${motionResolved.index}`;
+  } else if (motionResolved?.type === 'builtin') {
+    Live2DManager.playBuiltinMotion(motionResolved.key);
+    const builtinDef = getBuiltinMotionByKey(motionResolved.key);
+    motionText = `动作: ${builtinDef?.label || motionResolved.key}（内置）`;
+  } else if (motionResolved?.type === 'disabled') {
+    Live2DManager.stopBuiltinMotion();
+    motionText = '动作: 已禁用';
   }
 
-  const exprText = expr ? `表情: ${expr}` : '表情: (无匹配)';
-  const motionText = motion
-    ? motion.name
-      ? `动作: ${motion.name} (${motion.group || '(空动作组)'}#${motion.index})`
-      : `动作: ${motion.group || '(空动作组)'}`
-    : '动作: (无匹配)';
   previewStatus.value = `${tag} | ${exprText} | ${motionText}`;
 
-  if (!expr && !motion) {
+  if (!exprResolved && !motionResolved) {
     try {
       toastr.info('未匹配到可用的表情/动作（可尝试刷新列表或手动覆盖）');
     } catch {

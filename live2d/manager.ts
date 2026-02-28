@@ -20,12 +20,28 @@ import {
   collectMotionGroupNames,
   type Live2DMotionEntry,
 } from './expression-motion';
+import { getBuiltinExpressionByKey, getBuiltinMotionByKey } from './builtin-expression-motion';
 
 const TICKER_REGISTERED_FLAG = '__desktopPetLive2dTickerV1';
+const TICKER_RUNTIME_REGISTRY_KEY = '__desktopPetLive2dTickerRuntimeRegistryV1';
 
 export type ModelLoadProgress = {
   percent: number;
   message: string;
+};
+
+type BuiltinMotionFrameState = {
+  params: Record<string, number>;
+  weight: number;
+};
+
+type BuiltinMotionPlayerState = {
+  rafId: number;
+  stopped: boolean;
+  startedAt: number;
+  resetParams: Record<string, number> | null;
+  currentParams?: Record<string, number>;
+  weight: number;
 };
 
 /**
@@ -71,6 +87,8 @@ export const Live2DManager = {
   _manualMouthParamEnabled: false,
   _manualMouthParamIds: [] as string[],
   _manualMouthParamIdSet: new Set<string>(),
+  _builtinMotionPlayer: null as BuiltinMotionPlayerState | null,
+  _builtinMotionFrameState: null as BuiltinMotionFrameState | null,
 
   /** 获取父窗口 */
   _top(): Window {
@@ -210,7 +228,7 @@ export const Live2DManager = {
     if (!input) return null;
     if (input instanceof ArrayBuffer) return input;
     if (ArrayBuffer.isView(input)) {
-      return input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength);
+      return input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength) as ArrayBuffer;
     }
     return null;
   },
@@ -400,8 +418,28 @@ export const Live2DManager = {
     return namespace?.Live2DModel || null;
   },
 
+  _getTickerRuntimeRegistry(): Record<string, boolean> {
+    const top = this._top() as any;
+    const raw = top?.[TICKER_RUNTIME_REGISTRY_KEY];
+    if (raw && typeof raw === 'object') return raw as Record<string, boolean>;
+
+    const registry: Record<string, boolean> = {};
+    try {
+      top[TICKER_RUNTIME_REGISTRY_KEY] = registry;
+    } catch {
+      // ignore
+    }
+    return registry;
+  },
+
   _registerTickerForRuntime(Live2DModel: any, PIXI: any): void {
     if (!Live2DModel || !PIXI || typeof Live2DModel.registerTicker !== 'function') {
+      return;
+    }
+    const runtimeType = this._runtimeType || LIVE2D_RUNTIME_TYPES.LEGACY;
+    const registry = this._getTickerRuntimeRegistry();
+    if (registry[runtimeType] === true) {
+      log(`Live2D ticker 已按 runtime(${runtimeType}) 注册，跳过重复注册`);
       return;
     }
     const lastRegisteredTicker = (Live2DModel as any)[TICKER_REGISTERED_FLAG] as unknown;
@@ -409,7 +447,10 @@ export const Live2DManager = {
       Live2DModel.registerTicker(PIXI.Ticker);
       (Live2DModel as any)[TICKER_REGISTERED_FLAG] = PIXI.Ticker;
       log('Live2D ticker 注册完成');
+    } else {
+      log('Live2D ticker 已注册，跳过重复注册');
     }
+    registry[runtimeType] = true;
   },
 
   _blobToDataUrl(blob: Blob): Promise<string> {
@@ -1304,6 +1345,10 @@ export const Live2DManager = {
     if (stopped) {
       log('已停止当前动作', { reason });
     }
+  },
+
+  stopCurrentMotion(reason = 'manual'): void {
+    this._stopCurrentMotion(reason);
   },
 
   _refreshManualMouthParams(): void {
@@ -2383,6 +2428,426 @@ export const Live2DManager = {
     }
   },
 
+  _getCoreModel(): any | null {
+    return this.model?.internalModel?.coreModel ?? null;
+  },
+
+  _getBuiltinParameterAliases(paramId: string): string[] {
+    const pid = String(paramId || '').trim();
+    if (!pid) return [];
+
+    const aliasMap: Record<string, string[]> = {
+      ParamAngleX: ['ParamAngleX', 'PARAM_ANGLE_X', 'PARAM_HEAD_X'],
+      ParamAngleY: ['ParamAngleY', 'PARAM_ANGLE_Y', 'PARAM_HEAD_Y'],
+      ParamAngleZ: ['ParamAngleZ', 'PARAM_ANGLE_Z', 'PARAM_HEAD_Z'],
+      ParamEyeLOpen: ['ParamEyeLOpen', 'PARAM_EYE_L_OPEN', 'PARAM_EYE_OPEN', 'ParamEyeOpen'],
+      ParamEyeROpen: ['ParamEyeROpen', 'PARAM_EYE_R_OPEN', 'PARAM_EYE_OPEN', 'ParamEyeOpen'],
+      ParamEyeLSmile: ['ParamEyeLSmile', 'PARAM_EYE_L_SMILE', 'PARAM_EYE_SMILE'],
+      ParamEyeRSmile: ['ParamEyeRSmile', 'PARAM_EYE_R_SMILE', 'PARAM_EYE_SMILE'],
+      ParamEyeBallX: ['ParamEyeBallX', 'PARAM_EYE_BALL_X'],
+      ParamEyeBallY: ['ParamEyeBallY', 'PARAM_EYE_BALL_Y'],
+      ParamBrowLY: ['ParamBrowLY', 'PARAM_BROW_L_Y', 'PARAM_BROW_Y'],
+      ParamBrowRY: ['ParamBrowRY', 'PARAM_BROW_R_Y', 'PARAM_BROW_Y'],
+      ParamBrowLX: ['ParamBrowLX', 'PARAM_BROW_L_X', 'PARAM_BROW_X'],
+      ParamBrowRX: ['ParamBrowRX', 'PARAM_BROW_R_X', 'PARAM_BROW_X'],
+      ParamBrowLAngle: ['ParamBrowLAngle', 'PARAM_BROW_L_ANGLE', 'PARAM_BROW_ANGLE'],
+      ParamBrowRAngle: ['ParamBrowRAngle', 'PARAM_BROW_R_ANGLE', 'PARAM_BROW_ANGLE'],
+      ParamBrowLForm: ['ParamBrowLForm', 'PARAM_BROW_L_FORM', 'PARAM_BROW_FORM'],
+      ParamBrowRForm: ['ParamBrowRForm', 'PARAM_BROW_R_FORM', 'PARAM_BROW_FORM'],
+      ParamMouthForm: ['ParamMouthForm', 'PARAM_MOUTH_FORM', 'PARAM_MOUTH_SHAPE'],
+      ParamMouthOpenY: ['ParamMouthOpenY', 'PARAM_MOUTH_OPEN_Y', 'ParamMouthOpen', 'PARAM_MOUTH_OPEN'],
+      ParamCheek: ['ParamCheek', 'PARAM_CHEEK', 'PARAM_BLUSH'],
+      ParamBodyAngleX: ['ParamBodyAngleX', 'PARAM_BODY_ANGLE_X'],
+      ParamBodyAngleY: ['ParamBodyAngleY', 'PARAM_BODY_ANGLE_Y'],
+      ParamBodyAngleZ: ['ParamBodyAngleZ', 'PARAM_BODY_ANGLE_Z'],
+    };
+
+    const mapped = aliasMap[pid] || [pid];
+    const deduped: string[] = [];
+    const seen = new Set<string>();
+    for (const candidate of mapped) {
+      const value = String(candidate || '').trim();
+      if (!value || seen.has(value)) continue;
+      seen.add(value);
+      deduped.push(value);
+    }
+    return deduped;
+  },
+
+  _getBuiltinParamFallbackRange(paramId: string): { min: number; max: number } | null {
+    const id = String(paramId || '').trim().toLowerCase();
+    if (!id) return null;
+    if (id.includes('mouthopen') || id === 'parama') {
+      return { min: 0, max: 1 };
+    }
+    if (id.includes('open') || id.includes('smile') || id.includes('cheek')) {
+      return { min: 0, max: 1 };
+    }
+    return { min: -1, max: 1 };
+  },
+
+  _getCoreParameterIndex(coreModel: any, paramId: string): number {
+    if (!coreModel) return -1;
+    const pid = String(paramId || '').trim();
+    if (!pid) return -1;
+
+    try {
+      if (typeof coreModel.getParameterIndex === 'function') {
+        const idx = Number(coreModel.getParameterIndex(pid));
+        if (Number.isFinite(idx) && idx >= 0) return idx;
+      }
+    } catch {
+      // ignore
+    }
+
+    try {
+      if (typeof coreModel.getParamIndex === 'function') {
+        const idx = Number(coreModel.getParamIndex(pid));
+        if (Number.isFinite(idx) && idx >= 0) return idx;
+      }
+    } catch {
+      // ignore
+    }
+
+    try {
+      if (typeof coreModel.getParameterCount === 'function' && typeof coreModel.getParameterId === 'function') {
+        const count = Number(coreModel.getParameterCount()) || 0;
+        const lower = pid.toLowerCase();
+        for (let i = 0; i < count; i++) {
+          const id = String(coreModel.getParameterId(i) || '').trim();
+          if (!id) continue;
+          if (id.toLowerCase() === lower) return i;
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    return -1;
+  },
+
+  _getCoreParameterRange(coreModel: any, paramId: string, paramIndex = -1): { min: number; max: number } {
+    let min = Number.NaN;
+    let max = Number.NaN;
+    const pid = String(paramId || '').trim();
+    const idx = Number.isFinite(paramIndex) ? paramIndex : -1;
+
+    const asNumber = (value: unknown): number => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : Number.NaN;
+    };
+
+    if (idx >= 0) {
+      try {
+        if (typeof coreModel.getParameterMinimumValue === 'function') {
+          min = asNumber(coreModel.getParameterMinimumValue(idx));
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        if (typeof coreModel.getParameterMaximumValue === 'function') {
+          max = asNumber(coreModel.getParameterMaximumValue(idx));
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (!Number.isFinite(min)) {
+      try {
+        if (typeof coreModel.getParamMin === 'function') {
+          min = asNumber(coreModel.getParamMin(pid));
+        }
+      } catch {
+        // ignore
+      }
+    }
+    if (!Number.isFinite(max)) {
+      try {
+        if (typeof coreModel.getParamMax === 'function') {
+          max = asNumber(coreModel.getParamMax(pid));
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) {
+      const fallback = this._getBuiltinParamFallbackRange(pid);
+      if (fallback) {
+        if (!Number.isFinite(min)) min = fallback.min;
+        if (!Number.isFinite(max) || max <= min) max = fallback.max;
+      }
+    }
+
+    if (!Number.isFinite(min)) min = 0;
+    if (!Number.isFinite(max) || max <= min) max = min + 1;
+    return { min, max };
+  },
+
+  _mapBuiltinNormalizedValue(normalizedValue: unknown, min: number, max: number): number | null {
+    const normalized = Number(normalizedValue);
+    if (!Number.isFinite(normalized)) return null;
+
+    if (min < 0 && max > 0) {
+      const clamped = Math.max(-1, Math.min(1, normalized));
+      return clamped >= 0 ? clamped * max : clamped * Math.abs(min);
+    }
+
+    const clampedUnit = Math.max(0, Math.min(1, normalized));
+    return min + (max - min) * clampedUnit;
+  },
+
+  _writeCoreParameterById(coreModel: any, paramId: string, value: number, weight = 1): boolean {
+    const pid = String(paramId || '').trim();
+    if (!pid || !coreModel || !Number.isFinite(value)) return false;
+    const safeWeight = Number.isFinite(weight) ? Math.max(0, Math.min(1, Number(weight))) : 1;
+    const paramIndex = this._getCoreParameterIndex(coreModel, pid);
+    const targetValue = Number(value);
+
+    const tryInvoke = (method: string, ...args: unknown[]): boolean => {
+      const fn = coreModel?.[method];
+      if (typeof fn !== 'function') return false;
+      try {
+        fn.apply(coreModel, args);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    if (paramIndex >= 0) {
+      if (tryInvoke('setParameterValueByIndex', paramIndex, targetValue, safeWeight)) return true;
+      if (tryInvoke('addParameterValueByIndex', paramIndex, targetValue, safeWeight)) return true;
+      if (tryInvoke('setParameterValue', paramIndex, targetValue, safeWeight)) return true;
+      if (tryInvoke('addParameterValue', paramIndex, targetValue, safeWeight)) return true;
+      if (tryInvoke('setParamFloat', paramIndex, targetValue, safeWeight)) return true;
+      if (tryInvoke('addParamFloat', paramIndex, targetValue, safeWeight)) return true;
+    }
+
+    if (tryInvoke('setParameterValueById', pid, targetValue, safeWeight)) return true;
+    if (tryInvoke('addParameterValueById', pid, targetValue, safeWeight)) return true;
+    if (tryInvoke('setParamFloat', pid, targetValue, safeWeight)) return true;
+    if (tryInvoke('addParamFloat', pid, targetValue, safeWeight)) return true;
+
+    return false;
+  },
+
+  _applyBuiltinNormalizedParam(coreModel: any, paramId: string, normalizedValue: number, weight = 1): boolean {
+    const pid = String(paramId || '').trim();
+    if (!pid || !coreModel) return false;
+    const paramIndex = this._getCoreParameterIndex(coreModel, pid);
+    const range = this._getCoreParameterRange(coreModel, pid, paramIndex);
+    const mapped = this._mapBuiltinNormalizedValue(normalizedValue, range.min, range.max);
+    if (mapped == null || !Number.isFinite(mapped)) return false;
+    return this._writeCoreParameterById(coreModel, pid, Number(mapped), weight);
+  },
+
+  _applyBuiltinParamWithAliases(coreModel: any, paramId: string, normalizedValue: number, weight = 1): boolean {
+    const aliases = this._getBuiltinParameterAliases(paramId);
+    for (const alias of aliases) {
+      if (this._applyBuiltinNormalizedParam(coreModel, alias, normalizedValue, weight)) {
+        return true;
+      }
+    }
+    return false;
+  },
+
+  _setBuiltinMotionFrameState(params: Record<string, number> | null, weight = 1): void {
+    if (!params || typeof params !== 'object' || Object.keys(params).length === 0) {
+      this._builtinMotionFrameState = null;
+      return;
+    }
+    this._builtinMotionFrameState = {
+      params: { ...params },
+      weight: Number.isFinite(weight) ? Number(weight) : 1,
+    };
+  },
+
+  _applyBuiltinPostUpdate(model: any): boolean {
+    const coreModel = model?.internalModel?.coreModel;
+    if (!coreModel) return false;
+    const motionState = this._builtinMotionFrameState;
+    if (!motionState) return false;
+
+    const params = motionState.params && typeof motionState.params === 'object' ? motionState.params : {};
+    const weight = Number.isFinite(motionState.weight) ? motionState.weight : 1;
+    let applied = false;
+    for (const [paramId, normalizedValue] of Object.entries(params)) {
+      if (this._applyBuiltinParamWithAliases(coreModel, paramId, Number(normalizedValue), weight)) {
+        applied = true;
+      }
+    }
+    return applied;
+  },
+
+  applyBuiltinExpression(builtinExpressionKey: string, options: { weight?: number } = {}): boolean {
+    const expressionDef = getBuiltinExpressionByKey(builtinExpressionKey);
+    if (!expressionDef) return false;
+    const coreModel = this._getCoreModel();
+    if (!coreModel) return false;
+
+    const params =
+      expressionDef.parameters && typeof expressionDef.parameters === 'object' ? expressionDef.parameters : {};
+    const weight = Number.isFinite(options.weight) ? Number(options.weight) : 1;
+    let appliedCount = 0;
+
+    for (const [paramId, normalizedValue] of Object.entries(params)) {
+      if (this._applyBuiltinParamWithAliases(coreModel, paramId, Number(normalizedValue), weight)) {
+        appliedCount += 1;
+      }
+    }
+
+    return appliedCount > 0;
+  },
+
+  stopBuiltinMotion(): boolean {
+    const state = this._builtinMotionPlayer;
+    if (!state) {
+      this._setBuiltinMotionFrameState(null);
+      return false;
+    }
+
+    state.stopped = true;
+    const topWindow = this._top() as any;
+    try {
+      if (Number.isFinite(state.rafId)) {
+        (topWindow.cancelAnimationFrame || window.cancelAnimationFrame)?.call(topWindow, state.rafId);
+      }
+    } catch {
+      // ignore
+    }
+
+    const coreModel = this._getCoreModel();
+    const resetParams = state.resetParams && typeof state.resetParams === 'object' ? state.resetParams : null;
+    const resetWeight = Number.isFinite(state.weight) ? Number(state.weight) : 1;
+    if (coreModel && resetParams) {
+      for (const [paramId, normalizedValue] of Object.entries(resetParams)) {
+        this._applyBuiltinParamWithAliases(coreModel, paramId, Number(normalizedValue), resetWeight);
+      }
+    }
+
+    this._setBuiltinMotionFrameState(null);
+    this._builtinMotionPlayer = null;
+    return true;
+  },
+
+  playBuiltinMotion(builtinMotionKey: string, options: { weight?: number; easing?: string } = {}): boolean {
+    const motionDef = getBuiltinMotionByKey(builtinMotionKey);
+    if (!motionDef) return false;
+
+    const model = this.model;
+    const coreModel = this._getCoreModel();
+    if (!model || !coreModel) return false;
+
+    const keyframes = Array.isArray(motionDef.keyframes)
+      ? motionDef.keyframes
+          .map(frame => ({
+            t: Number(frame?.t),
+            params: frame?.params && typeof frame.params === 'object' ? frame.params : {},
+          }))
+          .filter(frame => Number.isFinite(frame.t) && frame.t >= 0 && frame.t <= 1)
+          .sort((a, b) => a.t - b.t)
+      : [];
+    if (keyframes.length === 0) return false;
+
+    this.stopBuiltinMotion();
+    this._ensureLipSyncHooks(model);
+
+    const durationMs = Math.max(120, Number(motionDef.durationMs) || 600);
+    const loop = motionDef.loop === true;
+    const easing = String(options.easing || motionDef.easing || 'linear').trim().toLowerCase();
+    const weight = Number.isFinite(options.weight) ? Number(options.weight) : 1;
+    const topWindow = this._top() as any;
+    const requestFrame: ((callback: FrameRequestCallback) => number) | undefined =
+      topWindow.requestAnimationFrame || window.requestAnimationFrame;
+    if (typeof requestFrame !== 'function') return false;
+    const perfNow = (): number => topWindow.performance?.now?.() ?? Date.now();
+
+    const applyEasing = (value: number): number => {
+      const t = Math.max(0, Math.min(1, Number(value) || 0));
+      if (easing === 'easeout') return 1 - Math.pow(1 - t, 2);
+      if (easing === 'easeinout') {
+        return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      }
+      return t;
+    };
+
+    const resetParams =
+      keyframes[0]?.params && typeof keyframes[0].params === 'object'
+        ? { ...(keyframes[0].params as Record<string, number>) }
+        : null;
+    const state: BuiltinMotionPlayerState = {
+      rafId: 0,
+      stopped: false,
+      startedAt: perfNow(),
+      resetParams,
+      weight,
+    };
+    this._builtinMotionPlayer = state;
+
+    const step = () => {
+      const currentState = this._builtinMotionPlayer;
+      if (!currentState || currentState !== state || state.stopped) return;
+      if (!this.model || this.model !== model) {
+        this.stopBuiltinMotion();
+        return;
+      }
+
+      const elapsed = perfNow() - state.startedAt;
+      let progress = elapsed / durationMs;
+      if (loop) {
+        progress = progress % 1;
+      } else {
+        progress = Math.max(0, Math.min(1, progress));
+      }
+      const easedProgress = applyEasing(progress);
+
+      let prevFrame = keyframes[0];
+      let nextFrame = keyframes[keyframes.length - 1];
+      for (let i = 0; i < keyframes.length; i++) {
+        const frame = keyframes[i];
+        if (frame.t <= easedProgress) prevFrame = frame;
+        if (frame.t >= easedProgress) {
+          nextFrame = frame;
+          break;
+        }
+      }
+
+      const frameSpan = Math.max(1e-6, (nextFrame.t - prevFrame.t) || 0);
+      const localAlpha =
+        nextFrame.t === prevFrame.t ? 0 : Math.max(0, Math.min(1, (easedProgress - prevFrame.t) / frameSpan));
+      const paramNames = new Set<string>([
+        ...Object.keys(prevFrame.params || {}),
+        ...Object.keys(nextFrame.params || {}),
+      ]);
+
+      const currentParams: Record<string, number> = {};
+      for (const paramId of paramNames) {
+        const prevValue = Number(prevFrame.params?.[paramId]);
+        const nextValue = Number(nextFrame.params?.[paramId]);
+        const a = Number.isFinite(prevValue) ? prevValue : Number.isFinite(nextValue) ? nextValue : 0;
+        const b = Number.isFinite(nextValue) ? nextValue : a;
+        const blended = a + (b - a) * localAlpha;
+        this._applyBuiltinParamWithAliases(coreModel, paramId, blended, weight);
+        currentParams[paramId] = blended;
+      }
+      state.currentParams = currentParams;
+      this._setBuiltinMotionFrameState(currentParams, weight);
+
+      if (!loop && elapsed >= durationMs) {
+        this.stopBuiltinMotion();
+        return;
+      }
+
+      state.rafId = requestFrame.call(topWindow, step);
+    };
+
+    state.rafId = requestFrame.call(topWindow, step);
+    return true;
+  },
+
   /**
    * 播放表情
    */
@@ -2408,6 +2873,8 @@ export const Live2DManager = {
    */
   playMotion(group?: string, index?: number): void {
     if (!this.model) return;
+    this.stopBuiltinMotion();
+    this._stopCurrentMotion('play-motion');
     const runMotionWithRuntimeFallback = (groupName: string, motionIndex: number) => {
       try {
         this.model.motion(groupName, motionIndex);
@@ -2954,6 +3421,11 @@ export const Live2DManager = {
         ret = rawUpdate(...args);
       } finally {
         self._inModelUpdate = false;
+        try {
+          self._applyBuiltinPostUpdate(model);
+        } catch {
+          // ignore
+        }
         if (self._lipSyncActive) {
           try {
             self._applyMouthValueToModel(model);
@@ -3012,6 +3484,8 @@ export const Live2DManager = {
    */
   destroyModel(): void {
     this._clearAutoMotionLoop();
+    this.stopBuiltinMotion();
+    this._setBuiltinMotionFrameState(null);
     this._lipSyncActive = false;
     this._inModelUpdate = false;
 
@@ -3054,6 +3528,8 @@ export const Live2DManager = {
     this._manualMouthParamEnabled = false;
     this._manualMouthParamIds = [];
     this._manualMouthParamIdSet.clear();
+    this._builtinMotionPlayer = null;
+    this._builtinMotionFrameState = null;
     this.modelBaseWidth = null;
     this.modelBaseHeight = null;
     this.modelBaseBounds = null;

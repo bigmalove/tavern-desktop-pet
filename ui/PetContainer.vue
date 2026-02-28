@@ -60,7 +60,7 @@ import { useSettingsStore } from '../core/settings';
 import { useUiStore } from '../core/ui';
 import { hasLive2DModel } from '../db/live2d-models';
 import { Live2DManager, type ModelLoadProgress } from '../live2d/manager';
-import { matchLive2DExpression, matchLive2DMotion } from '../live2d/expression-motion';
+import { resolveLive2DExpression, resolveLive2DMotion } from '../live2d/expression-motion';
 import { LipSyncManager, setLipSyncRefs } from '../live2d/lip-sync';
 import { Live2DStage } from '../live2d/stage';
 import type { GestureEvent } from '../utils/gesture-recognizer';
@@ -785,16 +785,26 @@ function applyEmotionToLive2D(tag: EmotionTag): boolean {
     let applied = false;
 
     const cfg = getEmotionConfigByTag(tag, settings.value.emotionConfigs);
-    const expression = matchLive2DExpression(model, tag, cfg?.live2dExpression);
-    if (expression) {
-      Live2DManager.playExpression(expression);
+    const expressionResolved = resolveLive2DExpression(model, tag, cfg?.live2dExpression);
+    if (expressionResolved?.type === 'native') {
+      Live2DManager.playExpression(expressionResolved.name);
       applied = true;
+    } else if (expressionResolved?.type === 'builtin') {
+      if (Live2DManager.applyBuiltinExpression(expressionResolved.key)) {
+        applied = true;
+      }
     }
 
-    const motion = matchLive2DMotion(model, tag, cfg?.live2dMotion);
-    if (motion) {
-      Live2DManager.playMotion(motion.group, motion.index);
+    const motionResolved = resolveLive2DMotion(model, tag, cfg?.live2dMotion);
+    if (motionResolved?.type === 'native') {
+      Live2DManager.playMotion(motionResolved.group, motionResolved.index);
       applied = true;
+    } else if (motionResolved?.type === 'builtin') {
+      if (Live2DManager.playBuiltinMotion(motionResolved.key)) {
+        applied = true;
+      }
+    } else if (motionResolved?.type === 'disabled') {
+      Live2DManager.stopBuiltinMotion();
     }
     return applied;
   } catch (e) {
@@ -805,6 +815,10 @@ function applyEmotionToLive2D(tag: EmotionTag): boolean {
 
 watch(showSettings, (visible) => {
   log(visible ? '设置面板已显示' : '设置面板已关闭');
+  if (!visible || !petClosed) return;
+  log('设置面板打开时检测到宠物已关闭，开始重新加载模型');
+  syncGazeFollowBinding();
+  void initPet();
 });
 
 function registerGlobalOpenSettings(): void {
