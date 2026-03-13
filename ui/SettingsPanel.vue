@@ -38,6 +38,7 @@
                 <label>API 模式</label>
                 <select v-model="settings.apiMode">
                   <option value="tavern">酒馆主 API</option>
+                  <option value="preset">酒馆 API 连接配置</option>
                   <option value="custom">自定义 API</option>
                 </select>
               </div>
@@ -51,6 +52,37 @@
                     </option>
                   </select>
                 </div>
+              </template>
+
+              <template v-if="settings.apiMode === 'preset'">
+                <div class="form-group">
+                  <label>API 连接配置</label>
+                  <div class="input-with-btn">
+                    <select
+                      v-model="settings.apiConfig.proxyPreset"
+                      :disabled="proxyPresetLoading || proxyPresetOptions.length === 0"
+                    >
+                      <option value="" disabled>{{ proxyPresetPlaceholder }}</option>
+                      <option v-if="proxyPresetMissingMessage" :value="settings.apiConfig.proxyPreset">
+                        {{ settings.apiConfig.proxyPreset }}（已失效）
+                      </option>
+                      <option v-for="preset in proxyPresetOptions" :key="preset.name" :value="preset.name">
+                        {{ preset.name }}
+                      </option>
+                    </select>
+                    <button class="input-btn" type="button" @click="refreshProxyPresetOptions" :disabled="proxyPresetLoading">
+                      {{ proxyPresetLoading ? '刷新中...' : '刷新配置' }}
+                    </button>
+                  </div>
+                  <div v-if="proxyPresetLoadError" class="hint hint-error">{{ proxyPresetLoadError }}</div>
+                  <div v-else-if="proxyPresetMissingMessage" class="hint hint-error">{{ proxyPresetMissingMessage }}</div>
+                  <div v-else class="hint">
+                    将自动跟随该 API 连接配置里的来源、模型、代理与采样设置，无需额外填写。
+                  </div>
+                </div>
+              </template>
+
+              <template v-if="settings.apiMode === 'custom'">
 
                 <div class="form-group">
                   <label>API URL</label>
@@ -102,10 +134,20 @@
 
               <div class="form-group">
                 <label>
-                  <input type="checkbox" v-model="settings.apiConfig.usePresetSampling" />
+                  <input
+                    type="checkbox"
+                    v-model="settings.apiConfig.usePresetSampling"
+                    :disabled="settings.apiMode === 'preset'"
+                  />
                   跟随酒馆预设采样参数
                 </label>
-                <div class="hint">启用后，采样参数将使用酒馆当前预设的值。</div>
+                <div class="hint">
+                  {{
+                    settings.apiMode === 'preset'
+                      ? '酒馆 API 连接配置模式会自动跟随所选连接配置里的采样参数。'
+                      : '启用后，采样参数将使用酒馆当前预设的值。'
+                  }}
+                </div>
               </div>
 
               <div class="form-group">
@@ -116,7 +158,7 @@
                 <div class="hint">关闭后不注入世界书提示词，默认关闭。</div>
               </div>
 
-              <template v-if="!settings.apiConfig.usePresetSampling">
+              <template v-if="settings.apiMode !== 'preset' && !settings.apiConfig.usePresetSampling">
                 <div class="form-row">
                   <div class="form-group half">
                     <label>Max Tokens</label>
@@ -1322,6 +1364,7 @@ function ensureNumericSettingsIntegrity(): void {
     settings.value.apiConfig = {
       url: '',
       apiKey: '',
+      proxyPreset: '',
       model: 'gpt-4o-mini',
       source: 'openai',
       max_tokens: DEFAULTS.MAX_TOKENS,
@@ -1345,6 +1388,7 @@ function ensureNumericSettingsIntegrity(): void {
 
   if (typeof api.url !== 'string') api.url = String(api.url ?? '');
   if (typeof api.apiKey !== 'string') api.apiKey = String(api.apiKey ?? '');
+  if (typeof api.proxyPreset !== 'string') api.proxyPreset = String(api.proxyPreset ?? '');
   if (typeof api.model !== 'string') api.model = String(api.model ?? 'gpt-4o-mini');
   if (typeof api.source !== 'string') api.source = String(api.source ?? 'openai');
   api.usePresetSampling = api.usePresetSampling === true;
@@ -2253,6 +2297,10 @@ const modelFetchError = ref('');
 const testingConnection = ref(false);
 const connectionStatus = ref<'idle' | 'success' | 'fail'>('idle');
 const connectionError = ref('');
+const proxyPresetOptions = ref<ProxyPresetOption[]>([]);
+const proxyPresetLoading = ref(false);
+const proxyPresetLoadStatus = ref<'idle' | 'success' | 'fail'>('idle');
+const proxyPresetLoadError = ref('');
 const showAdvanced = ref(false);
 const showEmotionAdvanced = ref(false);
 const showLipSyncAdvanced = ref(false);
@@ -2281,6 +2329,298 @@ type CustomApiModelConfig = {
   apiurl: string;
   key?: string;
 };
+
+type ProxyPresetOption = {
+  name: string;
+  id?: string;
+  api?: string;
+  model?: string;
+  source?: string;
+  type?: string;
+  proxyPresetName?: string;
+  url?: string;
+  password?: string;
+};
+
+const CONNECTION_PROFILE_NONE = '<None>';
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeProxyPresetName(value: unknown): string {
+  return String(value ?? '').trim();
+}
+
+function getConnectionProfileApiMap(apiValue: unknown): Record<string, unknown> | null {
+  const apiName = normalizeProxyPresetName(apiValue);
+  if (!apiName) return null;
+
+  try {
+    const context = SillyTavern.getContext?.();
+    const apiMap = context?.CONNECT_API_MAP?.[apiName];
+    if (!isPlainRecord(apiMap)) return null;
+    return apiMap;
+  } catch {
+    return null;
+  }
+}
+
+function resolveConnectionProfileSource(apiValue: unknown): string {
+  const apiMap = getConnectionProfileApiMap(apiValue);
+  if (!apiMap || normalizeProxyPresetName(apiMap.selected) !== 'openai') {
+    return '';
+  }
+  return normalizeProxyPresetName(apiMap.source);
+}
+
+function isSupportedConnectionProfile(profile: Record<string, unknown>): boolean {
+  const apiName = normalizeProxyPresetName(profile.api);
+  if (!apiName) return false;
+
+  try {
+    const context = SillyTavern.getContext?.();
+    const requestService = context?.ConnectionManagerRequestService;
+    if (requestService && typeof requestService.isProfileSupported === 'function') {
+      return !!requestService.isProfileSupported(profile);
+    }
+  } catch {
+    // ignore
+  }
+
+  const apiMap = getConnectionProfileApiMap(apiName);
+  if (!apiMap) return false;
+
+  switch (normalizeProxyPresetName(apiMap.selected)) {
+    case 'openai':
+      return !!normalizeProxyPresetName(apiMap.source);
+    case 'textgenerationwebui':
+      return !!normalizeProxyPresetName(apiMap.type);
+    default:
+      return false;
+  }
+}
+
+function normalizeConnectionProfileOptions(value: unknown): ProxyPresetOption[] {
+  if (!Array.isArray(value)) return [];
+
+  const out: ProxyPresetOption[] = [];
+  const seen = new Set<string>();
+
+  for (const item of value) {
+    if (!isPlainRecord(item)) continue;
+    const name = normalizeProxyPresetName(item.name);
+    if (!name || seen.has(name)) continue;
+    if (name === CONNECTION_PROFILE_NONE) continue;
+    if (!isSupportedConnectionProfile(item)) continue;
+
+    const api = normalizeProxyPresetName(item.api);
+    const source = resolveConnectionProfileSource(api);
+    const apiMap = getConnectionProfileApiMap(api);
+
+    seen.add(name);
+    out.push({
+      name,
+      id: normalizeProxyPresetName(item.id),
+      api,
+      model: normalizeProxyPresetName(item.model),
+      source,
+      type: normalizeProxyPresetName(apiMap?.type),
+      proxyPresetName: normalizeProxyPresetName(item.proxy),
+    });
+  }
+
+  return out.sort((lhs, rhs) => lhs.name.localeCompare(rhs.name));
+}
+
+function readConnectionManagerSettings(settingsPayload: Record<string, unknown>): Record<string, unknown> | null {
+  const extensionSettings = settingsPayload.extensionSettings;
+  if (isPlainRecord(extensionSettings) && isPlainRecord(extensionSettings.connectionManager)) {
+    return extensionSettings.connectionManager;
+  }
+
+  const legacyExtensionSettings = settingsPayload.extension_settings;
+  if (isPlainRecord(legacyExtensionSettings) && isPlainRecord(legacyExtensionSettings.connectionManager)) {
+    return legacyExtensionSettings.connectionManager;
+  }
+
+  if (isPlainRecord(settingsPayload.connectionManager)) {
+    return settingsPayload.connectionManager;
+  }
+
+  return null;
+}
+
+function readConnectionProfilesFromContext(): { options: ProxyPresetOption[]; selectedName: string } | null {
+  try {
+    const context = SillyTavern.getContext?.();
+    const manager = context?.extensionSettings?.connectionManager;
+    const options = normalizeConnectionProfileOptions(manager?.profiles);
+    const selectedId = normalizeProxyPresetName(manager?.selectedProfile);
+    const selectedName = options.find(option => option.id === selectedId)?.name || '';
+
+    if (options.length > 0 || selectedName) {
+      return { options, selectedName };
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function readConnectionProfilesFromDom(): { options: ProxyPresetOption[]; selectedName: string } | null {
+  try {
+    const topWindow = window.parent ?? window;
+    const doc = topWindow.document;
+    const select = doc.querySelector('#connection_profiles') as HTMLSelectElement | null;
+    if (!select) return null;
+
+    const out: ProxyPresetOption[] = [];
+    let selectedName = '';
+    const seen = new Set<string>();
+
+    for (const option of Array.from(select.options)) {
+      const name = normalizeProxyPresetName(option.textContent);
+      const id = normalizeProxyPresetName(option.value);
+      if (!name || !id || seen.has(name)) continue;
+      seen.add(name);
+      out.push({ name, id });
+      if (option.selected) {
+        selectedName = name;
+      }
+    }
+
+    if (out.length > 0 || selectedName) {
+      return { options: out, selectedName };
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function readSelectedConnectionProfileName(
+  manager: Record<string, unknown>,
+  options: ProxyPresetOption[],
+): string {
+  const selectedId = normalizeProxyPresetName(manager.selectedProfile);
+  if (!selectedId) return '';
+  return options.find(option => option.id === selectedId)?.name || '';
+}
+
+function resetCustomApiState(): void {
+  modelList.value = [];
+  modelFetchError.value = '';
+  fetchingModels.value = false;
+  testingConnection.value = false;
+  connectionStatus.value = 'idle';
+  connectionError.value = '';
+}
+
+async function loadProxyPresetOptionsFromTavern(): Promise<{
+  options: ProxyPresetOption[];
+  selectedName: string;
+}> {
+  const fromContext = readConnectionProfilesFromContext();
+  if (fromContext) {
+    return fromContext;
+  }
+
+  const fromDom = readConnectionProfilesFromDom();
+  if (fromDom) {
+    return fromDom;
+  }
+
+  const response = await fetch('/api/settings/get', {
+    method: 'POST',
+    headers: {
+      ...SillyTavern.getRequestHeaders(),
+      'Content-Type': 'application/json',
+    },
+    body: '{}',
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+
+  const payload = (await response.json()) as { settings?: unknown };
+  const rawSettings = payload?.settings;
+  let parsedSettings: unknown = rawSettings;
+
+  if (typeof rawSettings === 'string') {
+    try {
+      parsedSettings = JSON.parse(rawSettings);
+    } catch {
+      throw new Error('酒馆设置解析失败');
+    }
+  }
+
+  if (!isPlainRecord(parsedSettings)) {
+    throw new Error('酒馆设置格式无效');
+  }
+
+  const manager = readConnectionManagerSettings(parsedSettings);
+  if (!manager) {
+    throw new Error('酒馆设置中未找到 API 连接配置');
+  }
+
+  const options = normalizeConnectionProfileOptions(manager.profiles);
+
+  return {
+    options,
+    selectedName: readSelectedConnectionProfileName(manager, options),
+  };
+}
+
+async function refreshProxyPresetOptions(): Promise<void> {
+  proxyPresetLoading.value = true;
+  proxyPresetLoadStatus.value = 'idle';
+  proxyPresetLoadError.value = '';
+
+  try {
+    const { options, selectedName } = await loadProxyPresetOptionsFromTavern();
+    proxyPresetOptions.value = options;
+    proxyPresetLoadStatus.value = 'success';
+
+    const savedName = normalizeProxyPresetName(settings.value.apiConfig.proxyPreset);
+    const tavernSelectedName = normalizeProxyPresetName(selectedName);
+    const tavernSelectedExists = options.some(option => option.name === tavernSelectedName);
+
+    if (!savedName && tavernSelectedExists) {
+      settings.value.apiConfig.proxyPreset = tavernSelectedName;
+    }
+  } catch (e: unknown) {
+    proxyPresetOptions.value = [];
+    proxyPresetLoadStatus.value = 'fail';
+    const detail = e instanceof Error ? e.message : String(e);
+    proxyPresetLoadError.value = `API 连接配置列表加载失败，请重试：${detail}`;
+  } finally {
+    proxyPresetLoading.value = false;
+  }
+}
+
+const proxyPresetPlaceholder = computed(() => {
+  if (proxyPresetLoading.value) return '正在读取 API 连接配置...';
+  if (proxyPresetLoadStatus.value === 'fail') return '加载失败，请刷新配置';
+  if (proxyPresetOptions.value.length <= 0) return '暂无可用 API 连接配置';
+  return '请选择 API 连接配置';
+});
+
+const proxyPresetExists = computed(() => {
+  const selected = normalizeProxyPresetName(settings.value.apiConfig.proxyPreset);
+  if (!selected) return false;
+  return proxyPresetOptions.value.some(option => option.name === selected);
+});
+
+const proxyPresetMissingMessage = computed(() => {
+  if (settings.value.apiMode !== 'preset') return '';
+  if (proxyPresetLoadStatus.value !== 'success') return '';
+  const selected = normalizeProxyPresetName(settings.value.apiConfig.proxyPreset);
+  if (!selected) return '';
+  if (proxyPresetExists.value) return '';
+  return `当前保存的 API 连接配置不存在（${selected}），请重新选择`;
+});
 
 function normalizeModelList(list: unknown): string[] {
   if (!Array.isArray(list)) return [];
@@ -2380,11 +2720,13 @@ async function fetchModels() {
       apiurl: url,
       key: settings.value.apiConfig.apiKey || undefined,
     });
+    if (settings.value.apiMode !== 'custom') return;
     modelList.value = models;
     if (models.length > 0 && !models.includes(settings.value.apiConfig.model)) {
       settings.value.apiConfig.model = models[0];
     }
   } catch (e: unknown) {
+    if (settings.value.apiMode !== 'custom') return;
     modelFetchError.value = `获取失败: ${e instanceof Error ? e.message : String(e)}`;
   } finally {
     fetchingModels.value = false;
@@ -2404,6 +2746,7 @@ async function testConnection() {
       apiurl: url,
       key: settings.value.apiConfig.apiKey || undefined,
     });
+    if (settings.value.apiMode !== 'custom') return;
     if (models && models.length >= 0) {
       connectionStatus.value = 'success';
     } else {
@@ -2411,6 +2754,7 @@ async function testConnection() {
       connectionError.value = '返回数据异常';
     }
   } catch (e: unknown) {
+    if (settings.value.apiMode !== 'custom') return;
     connectionStatus.value = 'fail';
     connectionError.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -3834,8 +4178,26 @@ watch(
     void refreshTtsVoices();
     refreshDiceReferenceSheetOptions();
     void refreshLocalModelInfo();
+    if (settings.value.apiMode !== 'custom') {
+      resetCustomApiState();
+    }
+    if (settings.value.apiMode === 'preset') {
+      void refreshProxyPresetOptions();
+    }
   },
   { immediate: true },
+);
+
+watch(
+  () => settings.value.apiMode,
+  apiMode => {
+    if (apiMode !== 'custom') {
+      resetCustomApiState();
+    }
+    if (props.visible && apiMode === 'preset') {
+      void refreshProxyPresetOptions();
+    }
+  },
 );
 
 watch(

@@ -54,11 +54,12 @@ function parseSettings(raw: unknown): Settings {
 const SettingsSchema = z
   .object({
     // API 配置
-    apiMode: z.enum(['custom', 'tavern']).default('tavern'),
+    apiMode: z.enum(['custom', 'tavern', 'preset']).default('tavern'),
     apiConfig: z
       .object({
         url: z.string().default(''),
         apiKey: z.string().default(''),
+        proxyPreset: z.string().default(''),
         model: z.string().default('gpt-4o-mini'),
         source: z.string().default('openai'),
         max_tokens: z.number().min(1).max(4096).default(DEFAULTS.MAX_TOKENS),

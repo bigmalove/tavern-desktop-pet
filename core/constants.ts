@@ -56,7 +56,7 @@ export const RECOMMENDED_MODELS = [
 ] as const;
 
 /** 吐槽风格枚举 */
-export const COMMENT_STYLES = ['毒舌吐槽', '可爱卖萌', '冷静分析', '傲娇', '自定义'] as const;
+export const COMMENT_STYLES = ['毒舌吐槽', '可爱卖萌', '冷静分析', '傲娇', '霸道宠溺', '直球小奶狗', '温柔爹系', '腹黑笑面虎', '清冷高岭之花', '慵懒狐狸', '病娇', '自定义'] as const;
 export type CommentStyle = (typeof COMMENT_STYLES)[number];
 
 /** 吐槽自动触发时机 */

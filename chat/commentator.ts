@@ -9,6 +9,21 @@ import {
 } from './prompt-templates';
 
 type CommentCallback = (text: string, isDone: boolean) => void;
+type OrderedPrompt =
+  | 'world_info_before'
+  | 'world_info_after'
+  | { role: 'system' | 'assistant' | 'user'; content: string };
+const CONNECTION_PROFILE_NONE = '<None>';
+
+type ApiConnectionProfile = {
+  name: string;
+  id?: string;
+  api?: string;
+  model?: string;
+  source?: string;
+  apiUrl?: string;
+  proxyPresetName?: string;
+};
 
 /**
  * 吐槽生成器
@@ -88,15 +103,12 @@ export const Commentator = {
 
       if (s.apiMode === 'custom' && s.apiConfig.url) {
         result = await this._generateCustom(system, user, s.apiConfig);
+      } else if (s.apiMode === 'preset') {
+        ChatMonitor.markSelfGeneration();
+        result = await this._generatePreset(system, user, s.apiConfig);
       } else {
         ChatMonitor.markSelfGeneration();
-        result = await this._generateTavern(
-          system,
-          user,
-          s.apiConfig.max_tokens,
-          s.apiConfig.temperature,
-          !!s.apiConfig.sendWorldInfo,
-        );
+        result = await this._generateTavern(system, user, !!s.apiConfig.sendWorldInfo);
       }
 
       const finalText = String(result || '').trim() || String(this._latestStreamText || '').trim();
@@ -166,15 +178,12 @@ export const Commentator = {
 
       if (s.apiMode === 'custom' && s.apiConfig.url) {
         result = await this._generateCustom(system, user, s.apiConfig);
+      } else if (s.apiMode === 'preset') {
+        ChatMonitor.markSelfGeneration();
+        result = await this._generatePreset(system, user, s.apiConfig);
       } else {
         ChatMonitor.markSelfGeneration();
-        result = await this._generateTavern(
-          system,
-          user,
-          s.apiConfig.max_tokens,
-          s.apiConfig.temperature,
-          !!s.apiConfig.sendWorldInfo,
-        );
+        result = await this._generateTavern(system, user, !!s.apiConfig.sendWorldInfo);
       }
 
       const finalText = String(result || '').trim() || String(this._latestStreamText || '').trim();
@@ -194,22 +203,313 @@ export const Commentator = {
     }
   },
 
-  async _generateTavern(
-    system: string,
-    user: string,
-    maxTokens: number,
-    temperature: number,
-    sendWorldInfo: boolean,
-  ): Promise<string> {
-    this._setupStreamListener();
-    const orderedPrompts: Array<
-      'world_info_before' | 'world_info_after' | { role: 'system' | 'assistant' | 'user'; content: string }
-    > = sendWorldInfo
+  _buildOrderedPrompts(system: string, user: string, sendWorldInfo: boolean): OrderedPrompt[] {
+    return sendWorldInfo
       ? ['world_info_before', { role: 'system', content: system }, 'world_info_after', { role: 'user', content: user }]
       : [
           { role: 'system', content: system },
           { role: 'user', content: user },
         ];
+  },
+
+  _normalizeProxyPresetName(value: unknown): string {
+    return String(value ?? '').trim();
+  },
+
+  _normalizeConnectionProfileSelectionName(value: unknown): string {
+    const normalized = this._normalizeProxyPresetName(value);
+    if (!normalized || normalized === CONNECTION_PROFILE_NONE) {
+      return '';
+    }
+    return normalized;
+  },
+
+  _getConnectionProfileApiMap(apiValue: unknown): Record<string, unknown> | null {
+    const apiName = this._normalizeProxyPresetName(apiValue);
+    if (!apiName) return null;
+
+    try {
+      const context = SillyTavern.getContext?.();
+      const apiMap = context?.CONNECT_API_MAP?.[apiName];
+      if (!apiMap || typeof apiMap !== 'object' || Array.isArray(apiMap)) {
+        return null;
+      }
+      return apiMap as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  },
+
+  _resolveConnectionProfileSource(apiValue: unknown): string {
+    const apiMap = this._getConnectionProfileApiMap(apiValue);
+    if (!apiMap || this._normalizeProxyPresetName(apiMap.selected) !== 'openai') {
+      return '';
+    }
+    return this._normalizeProxyPresetName(apiMap.source);
+  },
+
+  _isSupportedConnectionProfile(profile: Record<string, unknown>): boolean {
+    const apiName = this._normalizeProxyPresetName(profile.api);
+    if (!apiName) {
+      return false;
+    }
+
+    try {
+      const context = SillyTavern.getContext?.();
+      const requestService = context?.ConnectionManagerRequestService;
+      if (requestService && typeof requestService.isProfileSupported === 'function') {
+        return !!requestService.isProfileSupported(profile);
+      }
+    } catch {
+      // ignore
+    }
+
+    const apiMap = this._getConnectionProfileApiMap(apiName);
+    if (!apiMap) {
+      return false;
+    }
+
+    switch (this._normalizeProxyPresetName(apiMap.selected)) {
+      case 'openai':
+        return !!this._normalizeProxyPresetName(apiMap.source);
+      case 'textgenerationwebui':
+        return !!this._normalizeProxyPresetName(apiMap.type);
+      default:
+        return false;
+    }
+  },
+
+  _normalizeApiConnectionProfiles(value: unknown): ApiConnectionProfile[] {
+    if (!Array.isArray(value)) return [];
+
+    const seen = new Set<string>();
+    const profiles: ApiConnectionProfile[] = [];
+
+    for (const item of value) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+      const record = item as Record<string, unknown>;
+      const name = this._normalizeProxyPresetName(record.name);
+      if (!name || seen.has(name)) continue;
+
+      if (!this._isSupportedConnectionProfile(record)) continue;
+
+      const api = this._normalizeProxyPresetName(record.api);
+      const source = this._resolveConnectionProfileSource(api);
+      seen.add(name);
+      profiles.push({
+        name,
+        id: this._normalizeProxyPresetName(record.id) || undefined,
+        api: api || undefined,
+        model: this._normalizeProxyPresetName(record.model) || undefined,
+        source: source || undefined,
+        apiUrl: this._normalizeProxyPresetName(record['api-url']) || undefined,
+        proxyPresetName: this._normalizeProxyPresetName(record.proxy) || undefined,
+      });
+    }
+
+    return profiles.sort((lhs, rhs) => lhs.name.localeCompare(rhs.name));
+  },
+
+  _readApiConnectionManagerSettings(value: unknown): Record<string, unknown> | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+
+    const root = value as Record<string, unknown>;
+    const extensionSettings = root.extensionSettings;
+    if (
+      extensionSettings &&
+      typeof extensionSettings === 'object' &&
+      !Array.isArray(extensionSettings) &&
+      (extensionSettings as Record<string, unknown>).connectionManager &&
+      typeof (extensionSettings as Record<string, unknown>).connectionManager === 'object' &&
+      !Array.isArray((extensionSettings as Record<string, unknown>).connectionManager)
+    ) {
+      return (extensionSettings as Record<string, unknown>).connectionManager as Record<string, unknown>;
+    }
+
+    const extension_settings = root.extension_settings;
+    if (
+      extension_settings &&
+      typeof extension_settings === 'object' &&
+      !Array.isArray(extension_settings) &&
+      (extension_settings as Record<string, unknown>).connectionManager &&
+      typeof (extension_settings as Record<string, unknown>).connectionManager === 'object' &&
+      !Array.isArray((extension_settings as Record<string, unknown>).connectionManager)
+    ) {
+      return (extension_settings as Record<string, unknown>).connectionManager as Record<string, unknown>;
+    }
+
+    const connectionManager = root.connectionManager;
+    if (connectionManager && typeof connectionManager === 'object' && !Array.isArray(connectionManager)) {
+      return connectionManager as Record<string, unknown>;
+    }
+
+    return null;
+  },
+
+  _readApiConnectionProfilesFromContext(): ApiConnectionProfile[] {
+    try {
+      const context = SillyTavern.getContext?.();
+      return this._normalizeApiConnectionProfiles(context?.extensionSettings?.connectionManager?.profiles);
+    } catch {
+      return [];
+    }
+  },
+
+  _readApiConnectionProfilesFromDom(): ApiConnectionProfile[] {
+    try {
+      const topWindow = window.parent ?? window;
+      const select = topWindow.document.querySelector('#connection_profiles') as HTMLSelectElement | null;
+      if (!select) return [];
+
+      const seen = new Set<string>();
+      const profiles: ApiConnectionProfile[] = [];
+      for (const option of Array.from(select.options)) {
+        const name = this._normalizeProxyPresetName(option.textContent);
+        const id = this._normalizeProxyPresetName(option.value);
+        if (!name || !id || seen.has(name)) continue;
+        seen.add(name);
+        profiles.push({ name, id });
+      }
+
+      return profiles;
+    } catch {
+      return [];
+    }
+  },
+
+  async _loadApiConnectionProfileByName(name: string): Promise<ApiConnectionProfile | null> {
+    const profileName = this._normalizeProxyPresetName(name);
+    if (!profileName) return null;
+
+    const profiles = this._readApiConnectionProfilesFromContext();
+    const matched = profiles.find(profile => profile.name === profileName);
+    if (matched) {
+      return matched;
+    }
+
+    if (typeof triggerSlash !== 'function') {
+      return null;
+    }
+
+    const escapedName = profileName.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const raw = await triggerSlash(`/profile-get "${escapedName}"`);
+    const text = String(raw || '').trim();
+    if (!text) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(text);
+      const normalized = this._normalizeApiConnectionProfiles([parsed]);
+      return normalized[0] ?? null;
+    } catch {
+      return null;
+    }
+  },
+
+  async _loadApiConnectionProfiles(): Promise<ApiConnectionProfile[]> {
+    const contextProfiles = this._readApiConnectionProfilesFromContext();
+    if (contextProfiles.length > 0) {
+      return contextProfiles;
+    }
+
+    const domProfiles = this._readApiConnectionProfilesFromDom();
+    if (domProfiles.length > 0) {
+      return domProfiles;
+    }
+
+    const response = await fetch('/api/settings/get', {
+      method: 'POST',
+      headers: {
+        ...SillyTavern.getRequestHeaders(),
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const payload = (await response.json()) as { settings?: unknown };
+    const rawSettings = payload?.settings;
+    let parsedSettings: unknown = rawSettings;
+
+    if (typeof rawSettings === 'string') {
+      parsedSettings = JSON.parse(rawSettings);
+    }
+
+    const manager = this._readApiConnectionManagerSettings(parsedSettings);
+    if (!manager) {
+      return [];
+    }
+
+    return this._normalizeApiConnectionProfiles(manager.profiles);
+  },
+
+  _escapeSlashArgument(value: string): string {
+    return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  },
+
+  async _getCurrentConnectionProfileName(): Promise<string> {
+    try {
+      const context = SillyTavern.getContext?.();
+      const selectedId = this._normalizeProxyPresetName(context?.extensionSettings?.connectionManager?.selectedProfile);
+      const profiles = this._normalizeApiConnectionProfiles(context?.extensionSettings?.connectionManager?.profiles);
+      if (selectedId) {
+        const matched = profiles.find(profile => profile.id === selectedId);
+        if (matched) {
+          return matched.name;
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    if (typeof triggerSlash !== 'function') {
+      return '';
+    }
+
+    const current = await triggerSlash('/profile');
+    return this._normalizeConnectionProfileSelectionName(current);
+  },
+
+  async _switchConnectionProfileByName(name: string): Promise<void> {
+    if (typeof triggerSlash !== 'function') {
+      throw new Error('当前环境不支持切换 API 连接配置');
+    }
+
+    const normalizedName = this._normalizeConnectionProfileSelectionName(name);
+    const targetName = normalizedName || CONNECTION_PROFILE_NONE;
+    const escapedName = this._escapeSlashArgument(targetName);
+    await triggerSlash(`/profile await=true timeout=5000 "${escapedName}"`);
+  },
+
+  async _withTemporaryConnectionProfile<T>(name: string, task: () => Promise<T>): Promise<T> {
+    const targetName = this._normalizeConnectionProfileSelectionName(name);
+    const currentName = await this._getCurrentConnectionProfileName();
+    if (currentName === targetName) {
+      return await task();
+    }
+
+    await this._switchConnectionProfileByName(targetName);
+
+    try {
+      return await task();
+    } finally {
+      try {
+        await this._switchConnectionProfileByName(currentName);
+      } catch (restoreError) {
+        error('恢复 API 连接配置失败:', restoreError);
+      }
+    }
+  },
+
+  async _generateTavern(system: string, user: string, sendWorldInfo: boolean): Promise<string> {
+    this._setupStreamListener();
+    const orderedPrompts = this._buildOrderedPrompts(system, user, sendWorldInfo);
 
     try {
       return await generateRaw({
@@ -221,6 +521,65 @@ export const Commentator = {
     } finally {
       this._cleanupStreamListener();
     }
+  },
+
+  async _generatePreset(
+    system: string,
+    user: string,
+    apiConfig: {
+      proxyPreset?: string;
+      max_tokens: number;
+      temperature: number;
+      frequency_penalty: number;
+      presence_penalty: number;
+      top_p: number;
+      top_k: number;
+      usePresetSampling: boolean;
+      sendWorldInfo?: boolean;
+    },
+  ): Promise<string> {
+    const proxyPreset = this._normalizeProxyPresetName(apiConfig.proxyPreset);
+    if (!proxyPreset) {
+      throw new Error('请选择 API 连接配置');
+    }
+
+    let presetNames: string[];
+    let matchedProfile: ApiConnectionProfile | null = null;
+    try {
+      const profiles = await this._loadApiConnectionProfiles();
+      presetNames = profiles.map(profile => profile.name);
+      matchedProfile = profiles.find(profile => profile.name === proxyPreset) ?? null;
+    } catch {
+      throw new Error('API 连接配置列表加载失败，请重试');
+    }
+
+    if (!presetNames.includes(proxyPreset)) {
+      throw new Error('当前保存的 API 连接配置不存在，请重新选择');
+    }
+
+    const fullProfile =
+      matchedProfile && matchedProfile.api ? matchedProfile : await this._loadApiConnectionProfileByName(proxyPreset);
+    if (!fullProfile || !fullProfile.api || !this._isSupportedConnectionProfile(fullProfile as Record<string, unknown>)) {
+      throw new Error('当前 API 连接配置不支持聊天补全');
+    }
+
+    if (!apiConfig.usePresetSampling) {
+      warn('酒馆 API 连接配置模式固定跟随所选连接配置的采样参数，已忽略手动采样覆盖');
+    }
+
+    return await this._withTemporaryConnectionProfile(proxyPreset, async () => {
+      this._setupStreamListener();
+      try {
+        return await generateRaw({
+          should_silence: true,
+          should_stream: true,
+          ordered_prompts: this._buildOrderedPrompts(system, user, !!apiConfig.sendWorldInfo),
+          custom_api: undefined,
+        });
+      } finally {
+        this._cleanupStreamListener();
+      }
+    });
   },
 
   async _generateCustom(
